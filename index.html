@@ -2952,7 +2952,7 @@ function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ================================================================
 // API CLIENT — connects to server.js backend
 // ================================================================
-const API_BASE = https://sheetbackend-9rpx.onrender.com; // same-origin in production
+const API_BASE = 'https://sheetbackend-9rpx.onrender.com;' // same-origin in production
 
 const api = {
   token: localStorage.getItem('sf_token') || null,
