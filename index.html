@@ -2964,18 +2964,26 @@ const api = {
   },
 
   async request(method, path, body) {
-    try {
-      const opts = { method, headers: this.headers() };
-      if (body && method !== 'GET') opts.body = JSON.stringify(body);
-      const res = await fetch(`${API_BASE}${path}`, opts);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      return data;
-      } catch (err) {
-      console.error('API request failed:', err);
-      throw err;                    // ← No more silent demo fallback
+  try {
+    const opts = { method, headers: this.headers() };
+    if (body && method !== 'GET') opts.body = JSON.stringify(body);
+    const res = await fetch(`${API_BASE}${path}`, opts);
+    
+    // ✅ DEFENSIVE: Check content-type before parsing
+    const contentType = res.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Server returned ${res.status}: ${text.slice(0, 100)}`);
     }
-  },
+    
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    return data;
+  } catch (err) {
+    if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) return null;
+    throw err;
+  }
+},
 
   get  : (path)         => api.request('GET',    path),
   post : (path, body)   => api.request('POST',   path, body),
