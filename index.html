@@ -2971,10 +2971,9 @@ const api = {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       return data;
-    } catch (err) {
-      // In demo mode (no backend), silently return null
-      if (err.message.includes('Failed to fetch') || err.message.includes('NetworkError')) return null;
-      throw err;
+      } catch (err) {
+      console.error('API request failed:', err);
+      throw err;                    // ← No more silent demo fallback
     }
   },
 
@@ -3020,9 +3019,8 @@ window.doLogin = async function() {
         role: data.user.role === 'provider' ? 'CNC Provider' : 'Designer',
         initials: `${data.user.firstName[0]}${data.user.lastName[0]}`.toUpperCase(),
       });
-    } else {
-      // Demo fallback
-      loginUser({ name: 'Demo Designer', email, role: 'Designer', initials: 'DD' });
+      } else {
+      showNotif('error', 'Login Failed', 'Invalid credentials');
     }
   } catch (err) {
     showNotif('error', 'Login Failed', err.message);
@@ -3037,23 +3035,28 @@ window.doSignup = async function() {
   const company   = document.querySelector('#signup-form input[placeholder="Acme Engineering"]')?.value;
   const role      = document.getElementById('role-provider')?.classList.contains('active') ? 'provider' : 'designer';
 
+  if (!firstName || !lastName || !email || !password) {
+    showNotif('error', 'Error', 'Please fill all required fields');
+    return;
+  }
+
   try {
     const data = await api.post('/api/auth/register', { firstName, lastName, email, password, company, role });
-    if (data) {
-      api.token = data.token;
-      localStorage.setItem('sf_token', data.token);
-      loginUser({
-        name: `${firstName} ${lastName}`,
-        email, role: role === 'provider' ? 'CNC Provider' : 'Designer',
-        initials: `${(firstName||'D')[0]}${(lastName||'U')[0]}`.toUpperCase(),
-      });
-      showNotif('success', 'Account Created', 'Welcome to SheetForge!');
-    } else {
-      showNotif('success', 'Account Created', 'Welcome to SheetForge! (demo mode)');
-      setTimeout(() => demoLogin('designer'), 800);
-    }
+    
+    api.token = data.token;
+    localStorage.setItem('sf_token', data.token);
+    
+    loginUser({
+      name: `${firstName} ${lastName}`,
+      email, 
+      role: role === 'provider' ? 'CNC Provider' : 'Designer',
+      initials: `${(firstName||'D')[0]}${(lastName||'U')[0]}`.toUpperCase(),
+    });
+    
+    showNotif('success', 'Account Created', 'Welcome to SheetForge!');
   } catch (err) {
-    showNotif('error', 'Signup Failed', err.message);
+    console.error(err);
+    showNotif('error', 'Signup Failed', err.message || 'Could not create account');
   }
 };
 
