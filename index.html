@@ -3050,6 +3050,11 @@ window.doSignup = async function() {
 
   try {
     const data = await api.post('/api/auth/register', { firstName, lastName, email, password, company, role });
+
+    if (!data) {
+        showNotif('error', 'Signup Failed', 'Cannot connect to server. Is it running?');
+        return;
+    }
     
     api.token = data.token;
     localStorage.setItem('sf_token', data.token);
