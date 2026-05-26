@@ -666,11 +666,10 @@ function DesignDetail() {
 
   const startConvert = async () => {
     setConverting(true);
-    try {
-      await apiFetch(`/convert/${id}`, { method:'POST', body:JSON.stringify({}) });
-      navigate(`/designs/${id}`);
-    } catch {}
-    setConverting(false);
+    // Navigate to pipeline view immediately so the user sees progress
+    navigate(`/convert/${id}`);
+    // Kick off conversion in background — ConvertPipeline polls /convert/:id/status
+    apiFetch(`/convert/${id}`, { method:'POST', body:JSON.stringify({}) }).catch(console.error);
   };
 
   if (loading) return <AppLayout><div className="p-7">Loading...</div></AppLayout>;
@@ -708,16 +707,46 @@ function DesignDetail() {
         <div className="col-span-2 bg-card border border-border rounded-xl overflow-hidden">
           <div className="px-5 py-4 border-b border-border"><h2 className="font-bold text-sm">Original File</h2></div>
           <div className="p-5 flex justify-center items-center bg-black/20 min-h-[400px]">
-            {design.originalFile?.url ? (
-              design.originalFile.mimetype?.includes('image') ?
-                <img src={design.originalFile.url} alt={design.partName} className="max-w-full max-h-[500px] object-contain" /> :
+            {(() => {
+              const f = design.originalFile;
+              if (!f?.url) return (
                 <div className="text-center text-muted-foreground font-mono text-sm">
-                  Preview not available for {design.originalFile.mimetype}<br/>
-                  <a href={design.originalFile.url} target="_blank" className="text-primary hover:underline mt-2 inline-block">Download File</a>
+                  <I name="file" size={36} className="mx-auto mb-3 opacity-20"/>
+                  No preview — file URL not set
                 </div>
-            ) : (
-              <div className="text-muted-foreground font-mono text-sm">No preview available</div>
-            )}
+              );
+              // Treat as image if mimetype says so, or if extension is an image type
+              const isImg = f.mimetype?.includes('image') ||
+                            /\.(png|jpe?g|gif|bmp|webp|tiff?)$/i.test(f.url);
+              if (isImg) return (
+                <img
+                  src={f.url}
+                  alt={design.partName}
+                  crossOrigin="anonymous"
+                  className="max-w-full max-h-[500px] object-contain rounded"
+                  onError={e => {
+                    // If CORS blocked, try without crossOrigin
+                    e.target.removeAttribute('crossorigin');
+                    e.target.onerror = ev => {
+                      ev.target.style.display = 'none';
+                      ev.target.nextSibling && (ev.target.nextSibling.style.display = 'flex');
+                    };
+                  }}
+                />
+              );
+              // Non-image file
+              return (
+                <div className="text-center text-muted-foreground font-mono text-sm">
+                  <I name="file" size={36} className="mx-auto mb-3 opacity-30 text-primary"/>
+                  <p className="mb-2">{f.filename}</p>
+                  <p className="text-xs mb-3 opacity-60">{f.mimetype}</p>
+                  <a href={f.url} target="_blank" rel="noreferrer"
+                     className="text-primary hover:underline inline-flex items-center gap-1.5 text-sm">
+                    <I name="file" size={13}/> Download File
+                  </a>
+                </div>
+              );
+            })()}
           </div>
         </div>
 
@@ -777,19 +806,39 @@ function ConvertPipeline() {
   const [,params] = useRoute('/convert/:id');
   const id = params?.id || '';
   const [status, setStatus] = useState(null);
+  const [convStarted, setConvStarted] = useState(false);
   const { navigate } = useRouter();
 
   useEffect(() => {
+    if (!id) return;
     let interval;
+    let done = false;
+
+    // Ensure conversion is running (safe to call even if already started)
+    if (!convStarted) {
+      setConvStarted(true);
+      apiFetch(`/convert/${id}/status`).then(s => {
+        // If not yet converting, kick it off
+        if (s.status === 'uploaded') {
+          apiFetch(`/convert/${id}`, { method:'POST', body:JSON.stringify({}) }).catch(console.error);
+        }
+      }).catch(console.error);
+    }
+
     const poll = () => {
       apiFetch(`/convert/${id}/status`).then(s => {
         setStatus(s);
-        if (s.status === 'ready') { clearInterval(interval); setTimeout(() => navigate(`/verify/${id}`), 2000); }
+        if ((s.status === 'ready' || s.status === 'approved' || s.status === 'saved') && !done) {
+          done = true;
+          clearInterval(interval);
+          setTimeout(() => navigate(`/verify/${id}`), 1800);
+        }
       }).catch(() => {});
     };
+
     poll();
-    interval = setInterval(poll, 2000);
-    return () => clearInterval(interval);
+    interval = setInterval(poll, 2500);
+    return () => { clearInterval(interval); };
   }, [id]);
 
   const totalSteps = status?.steps?.length || 23;
