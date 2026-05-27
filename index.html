@@ -1937,7 +1937,7 @@
                   </div>
                   <div style="display:flex;align-items:center;gap:14px;padding:14px;background:var(--bg);border-radius:var(--r);border:1px solid var(--border)">
                     <div style="width:36px;height:36px;background:#0070f3;border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-weight:700;font-size:12px">AI</div>
-                    <div style="flex:1"><div style="font-weight:500;font-size:13px">Anthropic Claude API</div><div class="text-dim text-sm">Used for DWG conversion analysis</div></div>
+                    <div style="flex:1"><div style="font-weight:500;font-size:13px">Google Gemini AI</div><div class="text-dim text-sm">Used for DWG conversion analysis (GEMINI_API_KEY)</div></div>
                     <span class="badge badge-ready">Active</span>
                   </div>
                   <div style="display:flex;align-items:center;gap:14px;padding:14px;background:var(--bg);border-radius:var(--r);border:1px solid var(--border)">
@@ -2488,15 +2488,15 @@ function startConversion() {
   document.getElementById('dwg-result-panel').style.display = 'none';
   setStep(2);
 
-  // Simulate AI analysis
+  // Simulate AI analysis (local preview only — no backend available)
   let step = 0;
   const analysisSteps = [
-    'Detecting part geometry and edges...',
-    'Identifying bend lines and fold directions...',
-    'Measuring dimensions from reference scale...',
-    'Extracting hole positions and diameters...',
-    'Analyzing material thickness indicators...',
-    'Generating DWG entities...',
+    'PRE-1: Loading image and detecting DPI…',
+    'PRE-5: Applying Otsu + Adaptive thresholding…',
+    'CV-2: Running multi-scale Canny edge detection…',
+    'CV-3: Extracting contours (findContours + approxPolyDP)…',
+    'CV-5: Hough Lines + HoughCircles fitting…',
+    'CV-8: Building DXF with ezdxf R2018…',
   ];
   const content = document.getElementById('ai-analysis-content');
   content.innerHTML = '';
@@ -3210,7 +3210,7 @@ window.startConversion = async function() {
   // If we have a backend design ID, use real conversion
   if (APP.currentDesignId && api.token) {
     // Update material/thickness
-    const mat = document.getElementById('material-select')?.value;
+    const mat   = document.getElementById('material-select')?.value;
     const thick = document.getElementById('thickness-input')?.value;
     const name  = document.getElementById('part-name')?.value;
     if (mat || thick || name) {
@@ -3219,72 +3219,156 @@ window.startConversion = async function() {
       }).catch(() => {});
     }
 
-    // Trigger AI conversion — show animated analysis panel
+    // Reset UI
     document.getElementById('convert-btn').disabled = true;
-    document.getElementById('convert-btn').innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Analyzing with AI...';
+    document.getElementById('convert-btn').innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Analyzing…';
     document.getElementById('ai-analysis-panel').style.display = 'block';
     document.getElementById('dwg-result-panel').style.display = 'none';
+    document.getElementById('conversion-progress-panel').style.display = 'none';
 
-    // Show real-time progress messages while backend processes
-    const progressMsgs = [
-      'Pre-processing image (normalise, threshold)...',
-      'Encoding to base64 for Vision API...',
-      'Sending to Claude Vision — detecting edges...',
-      'Extracting bend lines, holes, vertices...',
-      'Generating DXF entities (OUTLINE, HOLES, BEND_LINES)...',
-      'Compiling G-Code for 8 machine types...',
-    ];
+    // Remove any previous error banner
+    const prevErr = document.getElementById('conversion-error-banner');
+    if (prevErr) prevErr.remove();
+
     const aiContent = document.getElementById('ai-analysis-content');
     aiContent.innerHTML = '';
-    let msgIdx = 0;
-    const progressInterval = setInterval(() => {
-      if (msgIdx < progressMsgs.length) {
-        const d = document.createElement('div');
-        d.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
-        d.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success);font-size:10px"></i>${progressMsgs[msgIdx++]}`;
-        aiContent.appendChild(d);
-      }
-    }, 1800);
+
+    // ── Real-time progress via SSE ──────────────────────────────────────
+    let sseActive = true;
+    let es;
+    try {
+      es = new EventSource(`/api/convert/${APP.currentDesignId}/progress?token=${api.token}`);
+      es.onmessage = (evt) => {
+        try {
+          const data = JSON.parse(evt.data);
+          if (data.event === 'progress' || data.event === 'status') {
+            const d = document.createElement('div');
+            d.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
+            const icon = data.event === 'error'
+              ? '<i class="fas fa-exclamation-circle" style="color:var(--danger);font-size:10px"></i>'
+              : '<i class="fas fa-check-circle" style="color:var(--success);font-size:10px"></i>';
+            d.innerHTML = `${icon}${data.message || ''}`;
+            aiContent.appendChild(d);
+            aiContent.scrollTop = aiContent.scrollHeight;
+          }
+          if (data.event === 'complete' || data.event === 'error') {
+            sseActive = false;
+            es.close();
+          }
+        } catch (_) {}
+      };
+      es.onerror = () => { sseActive = false; };
+    } catch (_) {
+      sseActive = false;
+    }
+
+    // Show conversion progress panel with real step tracking
+    document.getElementById('conversion-progress-panel').style.display = 'block';
+    setStep(3);
 
     try {
+      // Kick off the actual conversion (server streams SSE while processing)
       const data = await api.post(`/api/convert/${APP.currentDesignId}`);
-      clearInterval(progressInterval);
+      sseActive = false;
+      if (es) es.close();
 
       if (data?.design) {
         APP.currentDesign = data.design;
         const a = data.analysis || {};
 
-        // Populate dimension grid
+        // Populate real data from process.py output
         document.getElementById('dim-w').textContent     = a.width      ? a.width.toFixed(0)  + 'mm' : '—';
         document.getElementById('dim-h').textContent     = a.height     ? a.height.toFixed(0) + 'mm' : '—';
-        document.getElementById('dim-t').textContent     = a.thickness  ? a.thickness + 'mm'         : (thick || '—') + 'mm';
+        document.getElementById('dim-t').textContent     = a.thickness  ? a.thickness + 'mm'          : (thick || '—') + 'mm';
         document.getElementById('dim-b').textContent     = a.bendLines  ?? '—';
         document.getElementById('dim-holes').textContent = a.holes      ?? '—';
-        document.getElementById('dim-conf').textContent  = a.confidence ? a.confidence + '%'          : '—';
+        document.getElementById('dim-conf').textContent  = a.confidence ? a.confidence + '%'           : '—';
         document.getElementById('dwg-filename').textContent = data.design.dwg?.filename || 'part.dxf';
         document.getElementById('dim-confidence').textContent =
-          `AutoCAD DXF R2000 • ${a.profileType || 'Profile'} • ${a.confidence || 0}% confidence`;
+          `DXF R2018 (ezdxf) • ${a.profileType || 'Profile'} • ${a.confidence || 0}% confidence`;
+
+        // Show real pipeline steps in analysis panel
+        if (data.steps?.length) {
+          data.steps.forEach(s => {
+            const d = document.createElement('div');
+            d.style.cssText = 'font-size:11px;color:var(--text-dim);padding:2px 0;display:flex;align-items:center;gap:8px';
+            d.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success);font-size:9px"></i><span style="color:var(--text-muted)">${s.name}</span><span style="margin-left:auto;color:var(--accent2);font-size:10px">${s.details || ''}</span>`;
+            aiContent.appendChild(d);
+          });
+        }
+
+        document.getElementById('analysis-spinner').style.display = 'none';
 
         // Show download buttons
         document.getElementById('btn-download-dxf').style.display = 'block';
-        populateGCodeButtons(APP.currentDesignId);
+
+        // G-code download (single file from process.py)
+        const gcBtn = document.getElementById('btn-download-gcode');
+        if (gcBtn) gcBtn.style.display = 'block';
 
         document.getElementById('dwg-result-panel').style.display = 'block';
+        document.getElementById('conv-status-badge').className = 'badge badge-ready';
+        document.getElementById('conv-status-badge').textContent = 'Complete';
         setStep(4);
-        showNotif('success', 'DXF + G-Code Ready', `AI extracted ${a.edges || 0} entities. ${data.machines?.length || 8} G-Code files generated.`);
+        showNotif('success', 'DXF + G-Code Ready',
+          `OpenCV/Gemini extracted ${a.edges || 0} entities. DXF generated via ezdxf.`);
         document.getElementById('convert-btn').disabled = false;
         document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Re-convert';
         return;
       }
     } catch (err) {
-      clearInterval(progressInterval);
-      console.warn('Backend conversion failed, using demo mode:', err.message);
-      showNotif('warning', 'Demo Mode', 'Backend unavailable — showing simulation');
+      sseActive = false;
+      if (es) es.close();
+
+      // ── Display real error in the analysis panel — NO demo fallback ──
+      document.getElementById('analysis-spinner').style.display = 'none';
+      document.getElementById('convert-btn').disabled = false;
+      document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Retry';
+      document.getElementById('conv-status-badge').className = 'badge' ;
+      document.getElementById('conv-status-badge').textContent = 'Failed';
+      document.getElementById('conv-status-badge').style.background = 'var(--danger)';
+
+      // Show error banner inside the analysis panel
+      const errorBanner = document.createElement('div');
+      errorBanner.id = 'conversion-error-banner';
+      errorBanner.style.cssText = `
+        margin-top:12px;padding:12px 14px;
+        background:rgba(239,68,68,0.1);
+        border:1px solid rgba(239,68,68,0.3);
+        border-radius:var(--r);font-size:12px;
+      `;
+      errorBanner.innerHTML = `
+        <div style="color:var(--danger);font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:8px">
+          <i class="fas fa-exclamation-triangle"></i>
+          Conversion Failed — AI Pipeline Error
+        </div>
+        <div style="color:var(--text-dim);font-family:var(--font-mono);font-size:11px;word-break:break-all">
+          ${err.message || 'Unknown error'}
+        </div>
+        <div style="margin-top:8px;padding:6px 8px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;font-size:11px;color:var(--warn)">
+          <i class="fas fa-info-circle"></i>
+          Demo mode is <strong>not</strong> active — this is a real pipeline error.
+          Check that <code>GEMINI_API_KEY</code> is set and <code>process.py</code> dependencies are installed.
+        </div>
+      `;
+      aiContent.appendChild(errorBanner);
+
+      showNotif('error', 'Conversion Failed', err.message || 'Pipeline error — see analysis panel');
+      return;  // Hard stop — no demo simulation
     }
   }
 
-  // Fallback to demo simulation
-  _origStartConversion();
+  // No design ID / not logged into backend — show informational message only
+  document.getElementById('convert-btn').disabled = false;
+  document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Convert';
+  const aiContent = document.getElementById('ai-analysis-content');
+  if (aiContent) {
+    aiContent.innerHTML = `
+      <div style="padding:12px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:var(--r);font-size:12px;color:var(--warn)">
+        <i class="fas fa-info-circle"></i>
+        <strong> No active session.</strong> Please upload a file and log in to run the AI conversion pipeline.
+      </div>`;
+  }
 };
 
 // ================================================================
