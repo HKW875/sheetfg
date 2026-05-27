@@ -494,7 +494,7 @@ function DesignDetail() {
   const [design,setDesign]=useState(null); const [loading,setLoading]=useState(true); const [converting,setConverting]=useState(false);
   const {navigate}=useRouter();
   useEffect(()=>{apiFetch(`/designs/${id}`).then(setDesign).finally(()=>setLoading(false));},[id]);
-  const startConvert=()=>{setConverting(true);navigate(`/convert/${id}`);apiFetch(`/convert/${id}`,{method:'POST',body:JSON.stringify({})}).catch(console.error);};
+  const startConvert=()=>{setConverting(true);navigate(`/convert/${id}`);};
   if(loading)return<AppLayout><div className="p-7">Loading...</div></AppLayout>;
   if(!design)return<AppLayout><div className="p-7">Not found</div></AppLayout>;
   const a=design.aiAnalysis||{};
@@ -559,16 +559,46 @@ function DesignDetail() {
 // ── Convert Pipeline ──────────────────────────────────────────────────────────
 function ConvertPipeline() {
   const [,params]=useRoute('/convert/:id'); const id=params?.id||'';
-  const [status,setStatus]=useState(null); const [started,setStarted]=useState(false);
+  const [status,setStatus]=useState(null);
+  const [simProgress,setSimProgress]=useState(0);
+  const startedRef=useRef(false);
   const {navigate}=useRouter();
+
+  // Animate a fake progress bar while Python runs (real step data only arrives after full completion)
+  useEffect(()=>{
+    if(status?.status==='analyzing'){
+      const t=setInterval(()=>setSimProgress(p=>p<88?+(p+(88-p)*0.06).toFixed(2):p),700);
+      return()=>clearInterval(t);
+    }
+    if(status?.status==='ready'||status?.status==='approved'||status?.status==='saved') setSimProgress(100);
+    if(status?.status==='error') setSimProgress(0);
+  },[status?.status]);
+
   useEffect(()=>{
     if(!id)return;
     let interval,done=false;
-    if(!started){setStarted(true);apiFetch(`/convert/${id}/status`).then(s=>{if(s.status==='uploaded')apiFetch(`/convert/${id}`,{method:'POST',body:JSON.stringify({})}).catch(console.error);}).catch(()=>{});}
-    const poll=()=>{apiFetch(`/convert/${id}/status`).then(s=>{setStatus(s);if((s.status==='ready'||s.status==='approved'||s.status==='saved')&&!done){done=true;clearInterval(interval);setTimeout(()=>navigate(`/verify/${id}`),1800);}}).catch(()=>{});};
+    // Ref prevents firing the start POST more than once across re-renders
+    if(!startedRef.current){
+      startedRef.current=true;
+      apiFetch(`/convert/${id}/status`).then(s=>{
+        if(s.status==='uploaded')
+          apiFetch(`/convert/${id}`,{method:'POST',body:JSON.stringify({})}).catch(console.error);
+      }).catch(()=>{});
+    }
+    const poll=()=>{
+      apiFetch(`/convert/${id}/status`).then(s=>{
+        setStatus(s);
+        if((s.status==='ready'||s.status==='approved'||s.status==='saved')&&!done){
+          done=true;clearInterval(interval);setTimeout(()=>navigate(`/verify/${id}`),1800);
+        }
+        // Stop polling on error — prevents infinite 0% loop
+        if(s.status==='error'&&!done){done=true;clearInterval(interval);}
+      }).catch(()=>{});
+    };
     poll();interval=setInterval(poll,2500);
     return()=>clearInterval(interval);
   },[id]);
+
   const STAGES=[
     'PRE-1: Image Ingestion','PRE-2: Channel Separation','PRE-3: Gaussian Blur (cv2.GaussianBlur)',
     'PRE-4: Denoising (Bilateral+NLM)','PRE-5: Thresholding (Otsu+Adaptive)','PRE-6: Morphology (cv2.morphologyEx)',
@@ -580,202 +610,85 @@ function ConvertPipeline() {
     'AI-3: OCR + Deep CNN Handwriting','AI-4: Claude Vision Deep Analysis',
     'MERGE: Data Fusion','CV-8: DXF Export (ezdxf+svgwrite+reportlab+matplotlib)','GCODE: G-Code Generation',
   ];
-  const done=status?.steps?.filter(s=>s.status==='done').length||0;
+
+  const completedSteps=status?.steps?.filter(s=>s.status==='done').length||0;
   const total=STAGES.length;
-  const pct=status?.progress??Math.round((done/total)*100);
-  const displaySteps=status?.steps||STAGES.map((name,i)=>({name,status:i<done?'done':i===done?'running':'pending'}));
-  const sc={done:'text-success bg-success/10 border-success/20',running:'text-primary bg-primary/5 border-primary/40',pending:'text-muted-foreground bg-background border-border'};
+  const isAnalyzing=status?.status==='analyzing';
+  const isError=status?.status==='error';
+  const pct=status?.progress>0?status.progress:isAnalyzing?Math.round(simProgress):0;
+  const activeStageIdx=isAnalyzing?Math.min(Math.floor(simProgress/100*total),total-1):-1;
+  const displaySteps=status?.steps?.length>0
+    ?status.steps
+    :STAGES.map((name,i)=>({name,status:i<completedSteps?'done':i===completedSteps?'running':'pending'}));
+  const sc={
+    done:'text-success bg-success/10 border-success/20',
+    running:'text-primary bg-primary/5 border-primary/40',
+    pending:'text-muted-foreground bg-background border-border',
+  };
   return (
     <AppLayout>
       <Topbar title="AI Pipeline v4" subtitle="Preprocessing → OpenCV → YOLO+SAM+CNN → Bezier → DXF+GCode"/>
       <div className="max-w-3xl mx-auto w-full p-6 space-y-4">
         <div className="bg-card border border-border rounded-xl p-6">
           <div className="flex justify-between items-end mb-3">
-            <div><h2 className="font-bold text-base">Conversion Progress</h2><p className="text-xs text-muted-foreground mt-0.5">23-stage pipeline</p></div>
-            <span className="font-mono text-primary font-bold text-xl">{pct}%</span>
+            <div>
+              <h2 className="font-bold text-base">Conversion Progress</h2>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                {isError?'Pipeline failed':'23-stage pipeline'}{isAnalyzing&&' — processing, please wait…'}
+              </p>
+            </div>
+            <span className={"font-mono font-bold text-xl "+(isError?'text-destructive':'text-primary')}>
+              {isError?'Error':`${pct}%`}
+            </span>
           </div>
           <div className="h-2.5 bg-background border border-border rounded-full overflow-hidden">
-            <div className="h-full bg-gradient-to-r from-primary to-secondary rounded-full transition-all duration-700" style={{width:`${pct}%`}}/>
+            <div
+              className={"h-full rounded-full transition-all duration-700 "+(isError?'bg-destructive':'bg-gradient-to-r from-primary to-secondary')}
+              style={{width:`${isError?100:Math.max(pct,isAnalyzing?3:0)}%`}}/>
           </div>
           <div className="flex justify-between text-[10px] text-muted-foreground font-mono mt-1">
-            <span>Stage {done} / {total}</span><span>{status?.currentStep||'Initialising...'}</span>
+            <span>Stage {completedSteps} / {total}</span>
+            <span>{isError?'Pipeline error — see message below':status?.currentStep||'Initialising...'}</span>
           </div>
         </div>
-        <div className="space-y-1 max-h-[55vh] overflow-y-auto pr-1">
-          {displaySteps.map((step,i)=>(
-            <div key={i} className={cn('flex items-center justify-between px-4 py-2.5 rounded-lg border transition-all',sc[step.status]||sc.pending)}>
-              <div className="flex items-center gap-3 min-w-0">
-                {step.status==='done'&&<I name="checkCircle" size={14} className="text-success flex-shrink-0"/>}
-                {step.status==='running'&&<div className="spin flex-shrink-0"><I name="loader" size={14} className="text-primary"/></div>}
-                {step.status==='pending'&&<div className="w-3.5 h-3.5 rounded-full border-2 border-border flex-shrink-0"/>}
-                <div className="min-w-0">
-                  <div className="font-medium text-xs truncate">{step.name}</div>
-                  {step.details&&<div className="text-[10px] text-muted-foreground font-mono truncate">{step.details}</div>}
-                </div>
-              </div>
-              {step.duration&&<div className="text-[10px] font-mono text-muted-foreground flex-shrink-0 ml-2">{step.duration}ms</div>}
+
+        {isError&&(
+          <div className="p-4 bg-destructive/10 border border-destructive/30 rounded-xl text-destructive text-sm fade-in flex items-start gap-3">
+            <I name="alertCircle" size={18} className="flex-shrink-0 mt-0.5"/>
+            <div className="flex-1">
+              <div className="font-semibold mb-0.5">Pipeline could not process this file</div>
+              <div className="text-[12px] opacity-80">The server failed to analyse the uploaded file. Make sure it is a valid image (PNG/JPG) or DXF and that the backend Python environment has its dependencies installed (cv2, ezdxf, etc.).</div>
             </div>
-          ))}
+            <a href={`#/designs/${id}`} className="flex-shrink-0 px-3 py-1.5 border border-destructive/40 rounded-lg text-xs font-medium hover:bg-destructive/10 transition-colors">← Back</a>
+          </div>
+        )}
+
+        <div className="space-y-1 max-h-[55vh] overflow-y-auto pr-1">
+          {displaySteps.map((step,i)=>{
+            const isCurrent=isAnalyzing&&i===activeStageIdx&&step.status==='pending';
+            const cls=isCurrent?sc.running:sc[step.status]||sc.pending;
+            return (
+              <div key={i} className={"flex items-center justify-between px-4 py-2.5 rounded-lg border transition-all "+cls}>
+                <div className="flex items-center gap-3 min-w-0">
+                  {step.status==='done'&&<I name="checkCircle" size={14} className="text-success flex-shrink-0"/>}
+                  {(step.status==='running'||isCurrent)&&<div className="spin flex-shrink-0"><I name="loader" size={14} className="text-primary"/></div>}
+                  {step.status==='pending'&&!isCurrent&&<div className="w-3.5 h-3.5 rounded-full border-2 border-border flex-shrink-0"/>}
+                  <div className="min-w-0">
+                    <div className="font-medium text-xs truncate">{step.name||STAGES[i]}</div>
+                    {step.details&&<div className="text-[10px] text-muted-foreground font-mono truncate">{step.details}</div>}
+                  </div>
+                </div>
+                {step.duration&&<div className="text-[10px] font-mono text-muted-foreground flex-shrink-0 ml-2">{step.duration}ms</div>}
+              </div>
+            );
+          })}
         </div>
+
         {status?.status==='ready'&&(
           <div className="p-4 bg-success/10 border border-success/30 rounded-xl text-success text-center font-semibold fade-in flex items-center justify-center gap-2">
             <I name="checkCircle" size={18}/>23 stages complete — DXF + GCode generated. Redirecting…
           </div>
         )}
-      </div>
-    </AppLayout>
-  );
-}
-
-// ── Verify Analysis ────────────────────────────────────────────────────────────
-function VerifyAnalysis() {
-  const [,params]=useRoute('/verify/:id'); const id=params?.id||'';
-  const [design,setDesign]=useState(null); const [loading,setLoading]=useState(true);
-  const [form,setForm]=useState({}); const [saving,setSaving]=useState(false);
-  const [uploading,setUploading]=useState(false); const [msg,setMsg]=useState('');
-  const {navigate}=useRouter();
-  useEffect(()=>{apiFetch(`/designs/${id}`).then(d=>{setDesign(d);setForm(d.aiAnalysis||{});}).finally(()=>setLoading(false));},[id]);
-  const approve=async()=>{setSaving(true);try{await apiFetch(`/designs/${id}/approve`,{method:'PATCH',body:JSON.stringify({correctedAnalysis:form})});navigate(`/designs/${id}`);}catch{}finally{setSaving(false);}};
-  const approveAndUpload=async()=>{
-    setUploading(true);setMsg('Approving + uploading to Cloudinary…');
-    try{
-      await apiFetch(`/designs/${id}/approve`,{method:'PATCH',body:JSON.stringify({correctedAnalysis:form})});
-      const r=await apiFetch(`/cloud/save/${id}`,{method:'POST'});
-      setMsg(`✓ ${(r.uploads||[]).length} files saved to Cloudinary + MongoDB`);
-      setTimeout(()=>navigate(`/designs/${id}`),1800);
-    }catch(e){setMsg(`Error: ${e.message}`);}finally{setUploading(false);}
-  };
-  const N=({label,field,type='number',step='0.01'})=>(
-    <div className="grid grid-cols-2 items-center gap-3">
-      <label className="text-xs text-muted-foreground">{label}</label>
-      <input type={type} step={step} value={form[field]??''} onChange={e=>setForm({...form,[field]:type==='number'?Number(e.target.value):e.target.value})}
-        className="bg-background border border-border rounded-md px-2.5 py-1.5 text-xs font-mono text-foreground focus:border-primary focus:outline-none w-full"/>
-    </div>
-  );
-  if(loading)return<AppLayout><div className="p-7">Loading…</div></AppLayout>;
-  const conf=form.confidence||0;
-  return (
-    <AppLayout>
-      <Topbar title="Verify AI Analysis" subtitle="Review and correct before generating final DXF + GCode"
-        actions={<div className="flex gap-2">
-          <button onClick={()=>navigate(`/designs/${id}`)} className="px-3 py-2 border border-border rounded-lg text-xs hover:bg-white/5">Cancel</button>
-          <button onClick={approve} disabled={saving||uploading} className="px-3 py-2 bg-card border border-border rounded-lg text-xs font-medium flex items-center gap-1.5 hover:bg-white/5 disabled:opacity-50">
-            {saving?<Spinner size={13}/>:<I name="check" size={13}/>}Approve Only
-          </button>
-          <button onClick={approveAndUpload} disabled={saving||uploading} className="px-4 py-2 bg-primary text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 hover:bg-blue-500 disabled:opacity-50">
-            {uploading?<Spinner size={13}/>:<I name="upload" size={13}/>}Approve + Cloud Save
-          </button>
-        </div>}/>
-      {msg&&<div className={cn('mx-6 mt-4 p-3 rounded-lg text-xs font-medium flex items-center gap-2 fade-in border',msg.startsWith('✓')?'bg-success/10 border-success/30 text-success':msg.startsWith('Error')?'bg-red-500/10 border-red-500/20 text-red-400':'bg-primary/10 border-primary/20 text-primary')}>{(saving||uploading)&&<Spinner size={12}/>}{msg}</div>}
-      <div className="p-6 grid grid-cols-3 gap-5 max-w-6xl mx-auto w-full">
-        <div className="space-y-4">
-          <div className="bg-card border border-border rounded-xl p-5">
-            <h2 className="font-bold text-xs uppercase tracking-wider text-muted-foreground mb-4">Geometry (mm)</h2>
-            <div className="space-y-3"><N label="Width" field="width"/><N label="Height" field="height"/><N label="Thickness" field="thickness"/></div>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-5">
-            <h2 className="font-bold text-xs uppercase tracking-wider text-muted-foreground mb-4">Features</h2>
-            <div className="space-y-3"><N label="Holes" field="holes" step="1"/><N label="Hole Ø (mm)" field="holesDiameter"/><N label="Bend Lines" field="bendLines" step="1"/><N label="Slots" field="slots" step="1"/></div>
-          </div>
-        </div>
-        <div className="space-y-4">
-          <div className="bg-card border border-border rounded-xl p-5">
-            <h2 className="font-bold text-xs uppercase tracking-wider text-muted-foreground mb-4">Classification</h2>
-            <div className="space-y-3">
-              {[['profileType',['sheet metal','plate','bracket','enclosure','gasket','stamping','other']],
-                ['tolerance',['±0.05mm','±0.1mm','±0.5mm','±1mm']],
-                ['material',['unknown','aluminum','stainless','mild steel','brass','copper','titanium']]].map(([field,opts])=>(
-                <div key={field} className="grid grid-cols-2 items-center gap-3">
-                  <label className="text-xs text-muted-foreground capitalize">{field.replace(/([A-Z])/g,' $1')}</label>
-                  <select value={form[field]||''} onChange={e=>setForm({...form,[field]:e.target.value})} className="bg-background border border-border rounded-md px-2.5 py-1.5 text-xs text-foreground focus:border-primary focus:outline-none">
-                    {opts.map(v=><option key={v}>{v}</option>)}
-                  </select>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-5">
-            <h2 className="font-bold text-xs uppercase tracking-wider text-muted-foreground mb-3">AI Confidence</h2>
-            <div className={cn('text-4xl font-black font-mono text-center py-2',conf>=90?'text-success':conf>=75?'text-warning':'text-red-400')}>{conf}%</div>
-            <div className="h-2 bg-background border border-border rounded-full mt-2 overflow-hidden">
-              <div className={cn('h-full rounded-full',conf>=90?'bg-success':conf>=75?'bg-warning':'bg-red-400')} style={{width:`${conf}%`}}/>
-            </div>
-          </div>
-        </div>
-        <div className="bg-card border border-border rounded-xl overflow-hidden flex flex-col">
-          <div className="px-4 py-3 border-b border-border flex justify-between items-center">
-            <h2 className="font-bold text-xs uppercase tracking-wider text-muted-foreground">Preview</h2>
-            {design?.dwg?.dxfUrl&&<a href={design.dwg.dxfUrl} download className="text-[10px] text-primary hover:underline flex items-center gap-1"><I name="download" size={11}/>DXF</a>}
-          </div>
-          <div className="flex-1 bg-black/30 p-2 flex items-center justify-center min-h-[260px]">
-            {design?.dwg?.svgUrl?<img src={design.dwg.svgUrl} alt="Preview" className="max-w-full max-h-full object-contain"/>:
-             design?.originalFile?.url&&design?.originalFile?.mimetype?.includes('image')?<img src={design.originalFile.url} alt="Original" className="max-w-full max-h-full object-contain opacity-60"/>:
-             <div className="text-muted-foreground text-xs font-mono text-center"><I name="file" size={28} className="mx-auto mb-2 opacity-20"/>No preview</div>}
-          </div>
-        </div>
-      </div>
-    </AppLayout>
-  );
-}
-
-// ── CAD Preview ───────────────────────────────────────────────────────────────
-function CADPreview() {
-  const [,params]=useRoute('/preview/:id'); const id=params?.id||'';
-  const [design,setDesign]=useState(null); const [saving,setSaving]=useState(false); const [cloudMsg,setCloudMsg]=useState('');
-  useEffect(()=>{apiFetch(`/designs/${id}`).then(setDesign);},[id]);
-  const saveToCloud=async()=>{
-    setSaving(true);setCloudMsg('Uploading to Cloudinary…');
-    try{const r=await apiFetch(`/cloud/save/${id}`,{method:'POST'});setCloudMsg(`✓ ${(r.uploads||[]).length} files saved`);setDesign(r);}
-    catch(e){setCloudMsg(`Error: ${e.message}`);}finally{setSaving(false);}
-  };
-  const a=design?.aiAnalysis||{};const dwg=design?.dwg||{};
-  const W=a.width||200;const H=a.height||150;
-  return (
-    <AppLayout>
-      <Topbar title="CAD Viewer" subtitle={design?.partName||'Loading…'}
-        actions={<div className="flex gap-2">
-          {dwg.dxfUrl&&<a href={dwg.dxfUrl} download className="border border-border bg-card px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5 hover:bg-white/5"><I name="download" size={13}/>DXF</a>}
-          {design?.status==='approved'&&<button onClick={saveToCloud} disabled={saving||design?.status==='saved'} className="bg-secondary text-white px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 hover:bg-teal-500 disabled:opacity-50">{saving?<Spinner size={13}/>:<I name="upload" size={13}/>}{design?.status==='saved'?'Saved':'Save to Cloud'}</button>}
-          <a href={`#/gcode?designId=${id}`} className="border border-orange-500/30 text-orange-400 px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5"><I name="terminal" size={13}/>GCode</a>
-          <a href={`#/ai-studio?designId=${id}`} className="border border-accent/30 text-accent px-3 py-2 rounded-lg text-xs font-medium flex items-center gap-1.5"><I name="cpu" size={13}/>AI Studio</a>
-        </div>}/>
-      {cloudMsg&&<div className={cn('mx-5 mt-3 px-4 py-2.5 rounded-lg text-xs font-medium flex items-center gap-2 fade-in border',cloudMsg.startsWith('✓')?'bg-success/10 border-success/30 text-success':cloudMsg.startsWith('Error')?'bg-red-500/10 border-red-500/20 text-red-400':'bg-primary/10 border-primary/20 text-primary')}>{saving&&<Spinner size={11}/>}{cloudMsg}</div>}
-      <div className="flex-1 p-4 flex flex-col gap-3">
-        <div className="flex-1 rounded-xl relative overflow-hidden border border-border" style={{minHeight:440,background:'#f8fafc',backgroundImage:'radial-gradient(#cbd5e1 1px,transparent 1px)',backgroundSize:'20px 20px'}}>
-          <div className="w-full h-full flex items-center justify-center" style={{minHeight:440}}>
-            {dwg.svgUrl?<img src={dwg.svgUrl} alt="DXF Preview" className="max-w-full max-h-[420px] object-contain"/>:(
-              <svg viewBox="0 0 800 560" style={{width:'100%',height:'100%',maxWidth:800,maxHeight:560}}>
-                {(()=>{
-                  const sc=Math.min(560/Math.max(W,1),400/Math.max(H,1));
-                  const sw=W*sc,sh=H*sc,ox=(800-sw)/2,oy=(560-sh)/2;
-                  const holes=a.holes||0,hR=((a.holesDiameter||6)/2)*sc,bends=a.bendLines||0;
-                  return<g>
-                    <rect x={ox} y={oy} width={sw} height={sh} fill="none" stroke="#3d7eff" strokeWidth="2"/>
-                    {Array.from({length:holes},(_,i)=>{const cx=ox+sw*(i+1)/(holes+1),cy=oy+sh/2;return<g key={i}><circle cx={cx} cy={cy} r={hR} fill="none" stroke="#00d4a0" strokeWidth="1.5"/><line x1={cx-hR*1.6} y1={cy} x2={cx+hR*1.6} y2={cy} stroke="#a855f7" strokeWidth="1" strokeDasharray="4,3"/><line x1={cx} y1={cy-hR*1.6} x2={cx} y2={cy+hR*1.6} stroke="#a855f7" strokeWidth="1" strokeDasharray="4,3"/></g>;})}
-                    {Array.from({length:bends},(_,i)=>{const yp=oy+sh*(i+1)/(bends+1);return<line key={i} x1={ox} y1={yp} x2={ox+sw} y2={yp} stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="8,4"/>;})}
-                    <text x={ox+sw/2} y={oy+sh+24} fill="#64748b" fontSize="11" textAnchor="middle" fontFamily="monospace">{W} mm</text>
-                    <text x={ox+sw+26} y={oy+sh/2} fill="#64748b" fontSize="11" textAnchor="middle" fontFamily="monospace" transform={`rotate(90,${ox+sw+26},${oy+sh/2})`}>{H} mm</text>
-                  </g>;
-                })()}
-              </svg>
-            )}
-          </div>
-          <div className="absolute bottom-3 left-3 right-3 bg-[#1a2132]/90 backdrop-blur border border-white/15 rounded-lg p-3 flex flex-wrap gap-x-5 gap-y-1 text-white text-[11px] font-mono">
-            <span><span style={{color:'#00d4a0'}}>Holes</span> {a.holes||0}×Ø{a.holesDiameter||0}mm</span>
-            <span><span style={{color:'#f59e0b'}}>Bends</span> {a.bendLines||0}</span>
-            <span><span style={{color:'#3d7eff'}}>W×H</span> {W}×{H}mm</span>
-            <span><span style={{color:'#a855f7'}}>Entities</span> {dwg.entities||0}</span>
-            <span className="ml-auto text-white/40">{a.material||'unknown'} • {a.tolerance||'±0.1mm'}</span>
-          </div>
-        </div>
-        <div className="grid grid-cols-5 gap-3">
-          {[['Width',`${W}mm`,'#3d7eff'],['Height',`${H}mm`,'#3d7eff'],['Thickness',`${a.thickness||'?'}mm`,'#00d4a0'],['Entities',dwg.entities||0,'#a855f7'],['Confidence',`${a.confidence||0}%`,'#f59e0b']].map(([k,v,c])=>(
-            <div key={k} className="bg-card border border-border rounded-lg p-3 text-center">
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1">{k}</div>
-              <div className="font-mono font-bold text-sm" style={{color:c}}>{v}</div>
-            </div>
-          ))}
-        </div>
       </div>
     </AppLayout>
   );
