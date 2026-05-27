@@ -2568,6 +2568,52 @@ function runConversion() {
   }, 700);
 }
 
+
+// ─── NEW REPLACEMENT: SHORT-LIVED AJAX POLLING FOR CLOUDFLARE COMPATIBILITY ───
+let pollInterval = setInterval(async () => {
+  try {
+    const res = await fetch(`${API_BASE}/api/convert/${designId}/status`, {
+      headers: { 'Authorization': `Bearer ${api.token}` }
+    });
+    
+    if (!res.ok) throw new Error('Failed to query conversion status');
+    const data = await res.json();
+    
+    // Append the text updating message safely into your UI console
+    if (data.progress) {
+      const d = document.createElement('div');
+      d.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
+      d.innerHTML = `<i class="fas fa-circle-notch fa-spin" style="color:var(--accent);font-size:10px"></i> <span>${data.progress}</span>`;
+      
+      // Prevent duplicating the exact same log entry consecutively
+      if (!aiContent.lastChild || aiContent.lastChild.textContent !== d.textContent) {
+        aiContent.appendChild(d);
+        aiContent.scrollTop = aiContent.scrollHeight;
+      }
+    }
+
+    // Terminate polling loop if processing sequence reaches a conclusion state
+    if (data.status === 'completed' || data.status === 'failed') {
+      clearInterval(pollInterval);
+      
+      const finishDiv = document.createElement('div');
+      finishDiv.style.cssText = 'font-size:12px;font-weight:600;padding:6px 0;';
+      
+      if (data.status === 'completed') {
+        finishDiv.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success)"></i> Core Processing Layout Finished!`;
+        if (typeof loadDesignsFromAPI === 'function') loadDesignsFromAPI();
+      } else {
+        finishDiv.innerHTML = `<i class="fas fa-times-circle" style="color:var(--danger)"></i> Conversion failed. Check server log output.`;
+      }
+      aiContent.appendChild(finishDiv);
+    }
+  } catch (err) {
+    console.error("Polling execution context error:", err);
+  }
+}, 2000); // Check for fresh processing updates every 2.0 seconds
+
+  
+
 function approveDWG() {
   APP.approvedDwgs.add('new');
   document.getElementById('approve-btn').innerHTML = '<i class="fas fa-check-circle"></i> Approved!';
