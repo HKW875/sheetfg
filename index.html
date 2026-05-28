@@ -2437,8 +2437,10 @@ function handleFileSelect(e) {
   if (e.target.files[0]) processFile(e.target.files[0]);
 }
 
-function processFile(file) {
+async function processFile(file) {
   APP.uploadedFile = file;
+  APP.currentDesignId = null;  // reset any stale ID
+
   const ext = file.name.split('.').pop().toLowerCase();
   document.getElementById('file-info-panel').style.display = 'block';
   document.getElementById('design-details-form').style.display = 'block';
@@ -2461,9 +2463,56 @@ function processFile(file) {
     placeholder.style.display = 'block';
     placeholder.innerHTML = `<i class="fas fa-file-${ext === 'pdf' ? 'pdf' : 'alt'}" style="font-size:32px;margin-bottom:8px;display:block;color:${ext === 'pdf' ? '#f87171' : 'var(--accent)'}"></i>${ext.toUpperCase()} file uploaded`;
   }
-  // Advance step
   setStep(1);
   showNotif('success', 'File Ready', `${file.name} loaded successfully`);
+
+  // ── Backend registration ───────────────────────────────────────
+  // Wait until api.token is available (may be set by auto-login in progress)
+  if (!api.token) {
+    // Token not ready yet — show inline nudge, but don't block UI
+    const aiPanel = document.getElementById('ai-analysis-content');
+    if (aiPanel) {
+      aiPanel.innerHTML = `<div style="padding:12px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:var(--r);font-size:12px;color:var(--warn)">
+        <i class="fas fa-lock" style="margin-right:6px"></i>
+        <strong>Log in first,</strong> then re-upload your file to register it with the backend.
+      </div>`;
+      document.getElementById('ai-analysis-panel').style.display = 'block';
+    }
+    return;
+  }
+
+  const convertBtn = document.getElementById('convert-btn');
+  if (convertBtn) { convertBtn.disabled = true; convertBtn.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Registering…'; }
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('partName', file.name.replace(/\.[^.]+$/, ''));
+
+    const res = await fetch(`${API_BASE}/api/designs/upload`, {
+      method: 'POST',
+      headers: api.token ? { Authorization: `Bearer ${api.token}` } : {},
+      body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    APP.currentDesignId = data.design._id;
+    console.log('[SheetForge] Design registered:', data.design._id);
+    if (convertBtn) { convertBtn.disabled = false; convertBtn.innerHTML = '<i class="fas fa-magic"></i> Convert'; }
+  } catch (err) {
+    console.error('[SheetForge] Backend upload failed:', err.message);
+    APP.currentDesignId = null;
+    if (convertBtn) { convertBtn.disabled = false; convertBtn.innerHTML = '<i class="fas fa-magic"></i> Convert'; }
+    const aiPanel = document.getElementById('ai-analysis-content');
+    if (aiPanel) {
+      aiPanel.innerHTML = `<div style="padding:12px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:var(--r);font-size:12px;color:var(--danger)">
+        <i class="fas fa-exclamation-triangle" style="margin-right:6px"></i>
+        <strong>Upload failed:</strong> ${err.message}. Re-upload after checking your connection.
+      </div>`;
+      document.getElementById('ai-analysis-panel').style.display = 'block';
+    }
+  }
 }
 
 function setStep(n) {
@@ -2479,44 +2528,183 @@ function setStep(n) {
   }
 }
 
-function startConversion() {
+async function startConversion() {
   if (!APP.uploadedFile) { showNotif('error', 'No File', 'Please upload a file first'); return; }
+
+  // ── Guard: must be logged in ──────────────────────────────────
+  if (!api.token) {
+    document.getElementById('ai-analysis-content').innerHTML = `
+      <div style="padding:12px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:var(--r);font-size:12px;color:var(--warn)">
+        <i class="fas fa-lock" style="margin-right:6px"></i>
+        <strong>Not logged in.</strong> Please sign in, re-upload your file, then click Convert.
+      </div>`;
+    document.getElementById('ai-analysis-panel').style.display = 'block';
+    return;
+  }
+
+  // ── Guard: file must be registered on backend ─────────────────
+  if (!APP.currentDesignId) {
+    // Try to re-register automatically before giving up
+    document.getElementById('convert-btn').disabled = true;
+    document.getElementById('convert-btn').innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Re-uploading…';
+    try {
+      const fd = new FormData();
+      fd.append('file', APP.uploadedFile);
+      fd.append('partName', APP.uploadedFile.name.replace(/\.[^.]+$/, ''));
+      const r = await fetch(`${API_BASE}/api/designs/upload`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${api.token}` },
+        body: fd,
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+      APP.currentDesignId = d.design._id;
+      console.log('[SheetForge] Auto-registered design:', APP.currentDesignId);
+    } catch (err) {
+      document.getElementById('convert-btn').disabled = false;
+      document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Convert';
+      document.getElementById('ai-analysis-content').innerHTML = `
+        <div style="padding:12px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:var(--r);font-size:12px;color:var(--danger)">
+          <i class="fas fa-exclamation-triangle" style="margin-right:6px"></i>
+          <strong>Could not register file:</strong> ${err.message}. Check the server is reachable and try again.
+        </div>`;
+      document.getElementById('ai-analysis-panel').style.display = 'block';
+      return;
+    }
+  }
+
+  // ── Both guards passed — proceed with real conversion ─────────
+  const mat   = document.getElementById('material-select')?.value;
+  const thick = document.getElementById('thickness-input')?.value;
+  const name  = document.getElementById('part-name')?.value;
+  if (mat || thick || name) {
+    await fetch(`${API_BASE}/api/designs/${APP.currentDesignId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type':'application/json', Authorization:`Bearer ${api.token}` },
+      body: JSON.stringify({ material:mat, thickness:parseFloat(thick), partName:name }),
+    }).catch(() => {});
+  }
+
   document.getElementById('convert-btn').disabled = true;
-  document.getElementById('convert-btn').innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Analyzing...';
+  document.getElementById('convert-btn').innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Analyzing…';
   document.getElementById('ai-analysis-panel').style.display = 'block';
-  document.getElementById('conversion-progress-panel').style.display = 'none';
   document.getElementById('dwg-result-panel').style.display = 'none';
+  document.getElementById('conversion-progress-panel').style.display = 'none';
+  const prevErr = document.getElementById('conversion-error-banner');
+  if (prevErr) prevErr.remove();
+  const aiContent = document.getElementById('ai-analysis-content');
+  aiContent.innerHTML = '';
   setStep(2);
 
-  // Simulate AI analysis (local preview only — no backend available)
-  let step = 0;
-  const analysisSteps = [
-    'PRE-1: Loading image and detecting DPI…',
-    'PRE-5: Applying Otsu + Adaptive thresholding…',
-    'CV-2: Running multi-scale Canny edge detection…',
-    'CV-3: Extracting contours (findContours + approxPolyDP)…',
-    'CV-5: Hough Lines + HoughCircles fitting…',
-    'CV-8: Building DXF with ezdxf R2018…',
-  ];
-  const content = document.getElementById('ai-analysis-content');
-  content.innerHTML = '';
-  const interval = setInterval(() => {
-    step++;
-    const div = document.createElement('div');
-    div.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
-    div.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success);font-size:10px"></i>${analysisSteps[step - 1]}`;
-    content.appendChild(div);
-    if (step >= analysisSteps.length) {
-      clearInterval(interval);
-      document.getElementById('analysis-spinner').style.display = 'none';
-      content.innerHTML += `
-        <div style="margin-top:12px;padding:10px;background:var(--bg);border-radius:var(--r);font-size:12px">
-          <div style="color:var(--accent2);font-weight:600;margin-bottom:6px">Analysis Complete</div>
-          <div style="color:var(--text-dim)">Detected: rectangular bracket with flanges, 4 bend lines (90°), 6× Ø8mm holes, uniform 2mm steel thickness</div>
-        </div>`;
-      setTimeout(() => runConversion(), 600);
+  // ── SSE progress stream ───────────────────────────────────────
+  let es;
+  try {
+    es = new EventSource(`${API_BASE}/api/convert/${APP.currentDesignId}/progress?token=${api.token}`);
+    es.onmessage = (evt) => {
+      try {
+        const d = JSON.parse(evt.data);
+        if (d.event === 'progress' || d.event === 'status') {
+          const div = document.createElement('div');
+          div.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
+          div.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success);font-size:10px"></i>${d.message || ''}`;
+          aiContent.appendChild(div);
+          aiContent.scrollTop = aiContent.scrollHeight;
+        }
+        if (d.event === 'complete' || d.event === 'error') es.close();
+      } catch(_) {}
+    };
+    es.onerror = () => es.close();
+  } catch(_) {}
+
+  document.getElementById('conversion-progress-panel').style.display = 'block';
+  setStep(3);
+
+  // ── Wake up Render free-tier if sleeping ──────────────────────
+  {
+    const wakeDiv = document.createElement('div');
+    wakeDiv.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
+    wakeDiv.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="color:var(--accent);font-size:10px"></i> <span>Waking up server…</span>';
+    aiContent.appendChild(wakeDiv);
+    let woke = false;
+    for (let i = 0; i < 12; i++) {
+      try {
+        const p = await fetch(`${API_BASE}/api/auth/me`, { headers: { Authorization:`Bearer ${api.token}` } });
+        if (p.ok || p.status === 401) { woke = true; break; }
+      } catch(_) {}
+      await new Promise(r => setTimeout(r, 5000));
     }
-  }, 450);
+    wakeDiv.innerHTML = woke
+      ? '<i class="fas fa-check-circle" style="color:var(--success);font-size:10px"></i> <span>Server ready</span>'
+      : '<i class="fas fa-exclamation-circle" style="color:var(--warn);font-size:10px"></i> <span>Server slow — proceeding…</span>';
+  }
+
+  try {
+    const res = await fetch(`${API_BASE}/api/convert/${APP.currentDesignId}`, {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', Authorization:`Bearer ${api.token}` },
+    });
+    if (es) es.close();
+
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) {
+      const txt = await res.text();
+      throw new Error(`Server returned ${res.status}: ${txt.slice(0,150)}`);
+    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    if (data?.design) {
+      APP.currentDesign = data.design;
+      const a = data.analysis || {};
+      document.getElementById('dim-w').textContent     = a.width      ? a.width.toFixed(0)  + 'mm' : '—';
+      document.getElementById('dim-h').textContent     = a.height     ? a.height.toFixed(0) + 'mm' : '—';
+      document.getElementById('dim-t').textContent     = a.thickness  ? a.thickness + 'mm'          : (thick || '—') + 'mm';
+      document.getElementById('dim-b').textContent     = a.bendLines  ?? '—';
+      document.getElementById('dim-holes').textContent = a.holes      ?? '—';
+      document.getElementById('dim-conf').textContent  = a.confidence ? a.confidence + '%'           : '—';
+      document.getElementById('dwg-filename').textContent = data.design.dwg?.filename || 'part.dxf';
+      document.getElementById('dim-confidence').textContent =
+        `DXF R2018 (ezdxf) • ${a.profileType || 'Profile'} • ${a.confidence || 0}% confidence`;
+      if (data.steps?.length) {
+        data.steps.forEach(s => {
+          const d = document.createElement('div');
+          d.style.cssText = 'font-size:11px;color:var(--text-dim);padding:2px 0;display:flex;align-items:center;gap:8px';
+          d.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success);font-size:9px"></i><span>${s.name}</span><span style="margin-left:auto;color:var(--accent2);font-size:10px">${s.details||''}</span>`;
+          aiContent.appendChild(d);
+        });
+      }
+      document.getElementById('analysis-spinner').style.display = 'none';
+      document.getElementById('btn-download-dxf').style.display = 'block';
+      const gcBtn = document.getElementById('btn-download-gcode');
+      if (gcBtn) gcBtn.style.display = 'block';
+      document.getElementById('dwg-result-panel').style.display = 'block';
+      document.getElementById('conv-status-badge').className = 'badge badge-ready';
+      document.getElementById('conv-status-badge').textContent = 'Complete';
+      setStep(4);
+      showNotif('success', 'DXF + G-Code Ready', `${a.edges || 0} entities extracted.`);
+      document.getElementById('convert-btn').disabled = false;
+      document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Re-convert';
+    }
+  } catch (err) {
+    if (es) es.close();
+    document.getElementById('analysis-spinner').style.display = 'none';
+    document.getElementById('convert-btn').disabled = false;
+    document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Retry';
+    document.getElementById('conv-status-badge').className = 'badge';
+    document.getElementById('conv-status-badge').textContent = 'Failed';
+    document.getElementById('conv-status-badge').style.background = 'var(--danger)';
+    const errorBanner = document.createElement('div');
+    errorBanner.id = 'conversion-error-banner';
+    errorBanner.style.cssText = 'margin-top:12px;padding:12px 14px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);border-radius:var(--r);font-size:12px';
+    errorBanner.innerHTML = `
+      <div style="color:var(--danger);font-weight:600;margin-bottom:6px"><i class="fas fa-exclamation-triangle"></i> Conversion Failed</div>
+      <div style="color:var(--text-dim);font-family:var(--font-mono);font-size:11px;word-break:break-all">${err.message}</div>
+      <div style="margin-top:8px;padding:6px 8px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;font-size:11px;color:var(--warn)">
+        <i class="fas fa-info-circle"></i> Check that GEMINI_API_KEY is set and process.py dependencies are installed.
+      </div>`;
+    aiContent.appendChild(errorBanner);
+    showNotif('error', 'Conversion Failed', err.message);
+  }
 }
 
 function runConversion() {
@@ -3125,84 +3313,6 @@ window.doSignup = async function() {
 };
 
 // ================================================================
-// BACKEND-CONNECTED UPLOAD
-// ================================================================
-const _origProcessFile = processFile;
-window.processFile = async function(file) {
-  _origProcessFile(file);
-
-  // Reset any stale design ID from a previous upload
-  APP.currentDesignId = null;
-
-  // Must be logged in to register a design on the backend
-  if (!api.token) {
-    console.warn('[SheetForge] No auth token — file stored locally only. Log in then re-upload.');
-    const convertBtn = document.getElementById('convert-btn');
-    if (convertBtn) {
-      convertBtn.disabled = false;
-      convertBtn.innerHTML = '<i class="fas fa-magic"></i> Convert';
-    }
-    // Show a gentle inline hint so the user knows what to do
-    const aiContent = document.getElementById('ai-analysis-content');
-    if (aiContent) {
-      aiContent.innerHTML = `
-        <div style="padding:12px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:var(--r);font-size:12px;color:var(--warn)">
-          <i class="fas fa-lock" style="margin-right:6px"></i>
-          <strong>Log in first,</strong> then re-upload your file to register it with the backend and enable AI conversion.
-        </div>`;
-      document.getElementById('ai-analysis-panel').style.display = 'block';
-    }
-    return;
-  }
-
-  // Show an uploading indicator on the convert button
-  const convertBtn = document.getElementById('convert-btn');
-  if (convertBtn) {
-    convertBtn.disabled = true;
-    convertBtn.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Registering…';
-  }
-
-  try {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('partName', file.name.replace(/\.[^.]+$/, ''));
-
-    const data = await api.upload(formData);
-
-    if (data?.design) {
-      APP.currentDesignId = data.design._id;
-      console.log('[SheetForge] Design registered on backend:', data.design._id);
-      if (convertBtn) {
-        convertBtn.disabled = false;
-        convertBtn.innerHTML = '<i class="fas fa-magic"></i> Convert';
-      }
-    } else {
-      throw new Error('Backend did not return a design record');
-    }
-  } catch (err) {
-    console.error('[SheetForge] Backend upload failed:', err.message);
-    APP.currentDesignId = null;
-    if (convertBtn) {
-      convertBtn.disabled = false;
-      convertBtn.innerHTML = '<i class="fas fa-magic"></i> Convert';
-    }
-    // Surface the error clearly in the analysis panel
-    const aiContent = document.getElementById('ai-analysis-content');
-    if (aiContent) {
-      aiContent.innerHTML = `
-        <div style="padding:12px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:var(--r);font-size:12px;color:var(--danger)">
-          <i class="fas fa-exclamation-triangle" style="margin-right:6px"></i>
-          <strong>Backend upload failed:</strong> ${err.message}.<br>
-          <span style="color:var(--text-dim);font-size:11px;margin-top:4px;display:block">
-            Check that the server is running and your session is valid, then re-upload.
-          </span>
-        </div>`;
-      document.getElementById('ai-analysis-panel').style.display = 'block';
-    }
-  }
-};
-
-// ================================================================
 // BACKEND-CONNECTED CONVERSION
 // ================================================================
 const MACHINE_LABELS = {
@@ -3262,211 +3372,6 @@ async function downloadGCode(designId, machine) {
     showNotif('success', 'G-Code Downloaded', `${MACHINE_LABELS[machine]?.label} .nc file saved`);
   } catch (e) { showNotif('error', 'G-Code Download Failed', e.message); }
 }
-
-const _origStartConversion = startConversion;
-window.startConversion = async function() {
-  if (!APP.uploadedFile) { showNotif('error', 'No File', 'Please upload a file first'); return; }
-
-  // If we have a backend design ID, use real conversion
-  if (APP.currentDesignId && api.token) {
-    // Update material/thickness
-    const mat   = document.getElementById('material-select')?.value;
-    const thick = document.getElementById('thickness-input')?.value;
-    const name  = document.getElementById('part-name')?.value;
-    if (mat || thick || name) {
-      await api.patch(`/api/designs/${APP.currentDesignId}`, {
-        material: mat, thickness: parseFloat(thick), partName: name,
-      }).catch(() => {});
-    }
-
-    // Reset UI
-    document.getElementById('convert-btn').disabled = true;
-    document.getElementById('convert-btn').innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Analyzing…';
-    document.getElementById('ai-analysis-panel').style.display = 'block';
-    document.getElementById('dwg-result-panel').style.display = 'none';
-    document.getElementById('conversion-progress-panel').style.display = 'none';
-
-    // Remove any previous error banner
-    const prevErr = document.getElementById('conversion-error-banner');
-    if (prevErr) prevErr.remove();
-
-    const aiContent = document.getElementById('ai-analysis-content');
-    aiContent.innerHTML = '';
-
-    // ── Real-time progress via SSE ──────────────────────────────────────
-    let sseActive = true;
-    let es;
-    try {
-      es = new EventSource(`${API_BASE}/api/convert/${APP.currentDesignId}/progress?token=${api.token}`);
-      es.onmessage = (evt) => {
-        try {
-          const data = JSON.parse(evt.data);
-          if (data.event === 'progress' || data.event === 'status') {
-            const d = document.createElement('div');
-            d.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
-            const icon = data.event === 'error'
-              ? '<i class="fas fa-exclamation-circle" style="color:var(--danger);font-size:10px"></i>'
-              : '<i class="fas fa-check-circle" style="color:var(--success);font-size:10px"></i>';
-            d.innerHTML = `${icon}${data.message || ''}`;
-            aiContent.appendChild(d);
-            aiContent.scrollTop = aiContent.scrollHeight;
-          }
-          if (data.event === 'complete' || data.event === 'error') {
-            sseActive = false;
-            es.close();
-          }
-        } catch (_) {}
-      };
-      es.onerror = () => { sseActive = false; };
-    } catch (_) {
-      sseActive = false;
-    }
-
-    // Show conversion progress panel with real step tracking
-    document.getElementById('conversion-progress-panel').style.display = 'block';
-    setStep(3);
-
-    // ── Render cold-start wake-up ─────────────────────────────────────────────
-    // Render free tier shuts the server down after inactivity. The first request
-    // during wake-up returns 500/503. We ping a cheap endpoint and wait until
-    // the server responds before firing the real conversion POST.
-    {
-      const wakeDiv = document.createElement('div');
-      wakeDiv.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
-      wakeDiv.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="color:var(--accent);font-size:10px"></i> <span>Waking up server…</span>';
-      aiContent.appendChild(wakeDiv);
-      const MAX_WAKE_ATTEMPTS = 12; // 12 × 5 s = 60 s max
-      let woke = false;
-      for (let i = 0; i < MAX_WAKE_ATTEMPTS; i++) {
-        try {
-          const p = await fetch(`${API_BASE}/api/auth/me`, { headers: { 'Authorization': `Bearer ${api.token}` } });
-          if (p.ok || p.status === 401) { woke = true; break; }
-        } catch (_) {}
-        await new Promise(r => setTimeout(r, 5000));
-      }
-      wakeDiv.innerHTML = woke
-        ? '<i class="fas fa-check-circle" style="color:var(--success);font-size:10px"></i> <span>Server ready</span>'
-        : '<i class="fas fa-exclamation-circle" style="color:var(--warn);font-size:10px"></i> <span>Server slow — attempting anyway…</span>';
-    }
-
-    try {
-      // Kick off the actual conversion (server streams SSE while processing)
-      const data = await api.post(`/api/convert/${APP.currentDesignId}`);
-      sseActive = false;
-      if (es) es.close();
-
-      if (data?.design) {
-        APP.currentDesign = data.design;
-        const a = data.analysis || {};
-
-        // Populate real data from process.py output
-        document.getElementById('dim-w').textContent     = a.width      ? a.width.toFixed(0)  + 'mm' : '—';
-        document.getElementById('dim-h').textContent     = a.height     ? a.height.toFixed(0) + 'mm' : '—';
-        document.getElementById('dim-t').textContent     = a.thickness  ? a.thickness + 'mm'          : (thick || '—') + 'mm';
-        document.getElementById('dim-b').textContent     = a.bendLines  ?? '—';
-        document.getElementById('dim-holes').textContent = a.holes      ?? '—';
-        document.getElementById('dim-conf').textContent  = a.confidence ? a.confidence + '%'           : '—';
-        document.getElementById('dwg-filename').textContent = data.design.dwg?.filename || 'part.dxf';
-        document.getElementById('dim-confidence').textContent =
-          `DXF R2018 (ezdxf) • ${a.profileType || 'Profile'} • ${a.confidence || 0}% confidence`;
-
-        // Show real pipeline steps in analysis panel
-        if (data.steps?.length) {
-          data.steps.forEach(s => {
-            const d = document.createElement('div');
-            d.style.cssText = 'font-size:11px;color:var(--text-dim);padding:2px 0;display:flex;align-items:center;gap:8px';
-            d.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success);font-size:9px"></i><span style="color:var(--text-muted)">${s.name}</span><span style="margin-left:auto;color:var(--accent2);font-size:10px">${s.details || ''}</span>`;
-            aiContent.appendChild(d);
-          });
-        }
-
-        document.getElementById('analysis-spinner').style.display = 'none';
-
-        // Show download buttons
-        document.getElementById('btn-download-dxf').style.display = 'block';
-
-        // G-code download (single file from process.py)
-        const gcBtn = document.getElementById('btn-download-gcode');
-        if (gcBtn) gcBtn.style.display = 'block';
-
-        document.getElementById('dwg-result-panel').style.display = 'block';
-        document.getElementById('conv-status-badge').className = 'badge badge-ready';
-        document.getElementById('conv-status-badge').textContent = 'Complete';
-        setStep(4);
-        showNotif('success', 'DXF + G-Code Ready',
-          `OpenCV/Gemini extracted ${a.edges || 0} entities. DXF generated via ezdxf.`);
-        document.getElementById('convert-btn').disabled = false;
-        document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Re-convert';
-        return;
-      }
-    } catch (err) {
-      sseActive = false;
-      if (es) es.close();
-
-      // ── Display real error in the analysis panel — NO demo fallback ──
-      document.getElementById('analysis-spinner').style.display = 'none';
-      document.getElementById('convert-btn').disabled = false;
-      document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Retry';
-      document.getElementById('conv-status-badge').className = 'badge' ;
-      document.getElementById('conv-status-badge').textContent = 'Failed';
-      document.getElementById('conv-status-badge').style.background = 'var(--danger)';
-
-      // Show error banner inside the analysis panel
-      const errorBanner = document.createElement('div');
-      errorBanner.id = 'conversion-error-banner';
-      errorBanner.style.cssText = `
-        margin-top:12px;padding:12px 14px;
-        background:rgba(239,68,68,0.1);
-        border:1px solid rgba(239,68,68,0.3);
-        border-radius:var(--r);font-size:12px;
-      `;
-      errorBanner.innerHTML = `
-        <div style="color:var(--danger);font-weight:600;margin-bottom:6px;display:flex;align-items:center;gap:8px">
-          <i class="fas fa-exclamation-triangle"></i>
-          Conversion Failed — AI Pipeline Error
-        </div>
-        <div style="color:var(--text-dim);font-family:var(--font-mono);font-size:11px;word-break:break-all">
-          ${err.message || 'Unknown error'}
-        </div>
-        <div style="margin-top:8px;padding:6px 8px;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;font-size:11px;color:var(--warn)">
-          <i class="fas fa-info-circle"></i>
-          Demo mode is <strong>not</strong> active — this is a real pipeline error.
-          Check that <code>GEMINI_API_KEY</code> is set and <code>process.py</code> dependencies are installed.
-        </div>
-      `;
-      aiContent.appendChild(errorBanner);
-
-      showNotif('error', 'Conversion Failed', err.message || 'Pipeline error — see analysis panel');
-      return;  // Hard stop — no demo simulation
-    }
-  }
-
-  // ── Diagnose exactly why we can't proceed ─────────────────────────
-  // Reaching here means either: no token, or upload didn't produce a design ID.
-  document.getElementById('convert-btn').disabled = false;
-  document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Convert';
-  const aiContent = document.getElementById('ai-analysis-content');
-  if (aiContent) {
-    let msg = '';
-    if (!api.token) {
-      msg = `<i class="fas fa-lock" style="margin-right:6px"></i>
-             <strong>Not logged in.</strong> Please sign in first, then re-upload your file to enable AI conversion.`;
-    } else if (!APP.currentDesignId) {
-      msg = `<i class="fas fa-cloud-upload-alt" style="margin-right:6px"></i>
-             <strong>File not registered with backend.</strong>
-             The upload may have failed or occurred before you were logged in.
-             Please re-upload your file to register it, then click Convert again.`;
-    } else {
-      msg = `<i class="fas fa-info-circle" style="margin-right:6px"></i>
-             <strong>Session error.</strong> Please refresh the page, log in, and re-upload your file.`;
-    }
-    aiContent.innerHTML = `
-      <div style="padding:12px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:var(--r);font-size:12px;color:var(--warn)">
-        ${msg}
-      </div>`;
-    document.getElementById('ai-analysis-panel').style.display = 'block';
-  }
-};
 
 // ================================================================
 // BACKEND-CONNECTED APPROVE
@@ -3657,10 +3562,7 @@ window.addEventListener('load', async () => {
         return;
       }
     } catch (_) {
-      // Token invalid — clear it so the user isn't stuck with a stale session
       localStorage.removeItem('sf_token');
-      api.token = null;
-      APP.currentDesignId = null;
     }
   }
 });
