@@ -2569,47 +2569,50 @@ function runConversion() {
 }
 
 
-// ─── STATUS POLLING — SSE fallback for Cloudflare/proxy environments ──────────
-// Called from convertDWG() once APP.currentDesignId is set.
-// Returns a stop function so the caller can cancel it on completion/error.
-function startConversionPolling(designId, aiContent) {
-  let lastProgress = '';
-  const interval = setInterval(async () => {
-    try {
-      const res = await fetch(`${API_BASE}/api/convert/${designId}/status`, {
-        headers: { 'Authorization': `Bearer ${api.token}` }
-      });
-      if (!res.ok) return; // server not ready yet — try again next tick
-
-      const data = await res.json();
-
-      if (data.progress && data.progress !== lastProgress) {
-        lastProgress = data.progress;
-        const d = document.createElement('div');
-        d.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
-        d.innerHTML = `<i class="fas fa-circle-notch fa-spin" style="color:var(--accent);font-size:10px"></i> <span>${data.progress}</span>`;
+// ─── NEW REPLACEMENT: SHORT-LIVED AJAX POLLING FOR CLOUDFLARE COMPATIBILITY ───
+let pollInterval = setInterval(async () => {
+  try {
+    const res = await fetch(`${API_BASE}/api/convert/${designId}/status`, {
+      headers: { 'Authorization': `Bearer ${api.token}` }
+    });
+    
+    if (!res.ok) throw new Error('Failed to query conversion status');
+    const data = await res.json();
+    
+    // Append the text updating message safely into your UI console
+    if (data.progress) {
+      const d = document.createElement('div');
+      d.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
+      d.innerHTML = `<i class="fas fa-circle-notch fa-spin" style="color:var(--accent);font-size:10px"></i> <span>${data.progress}</span>`;
+      
+      // Prevent duplicating the exact same log entry consecutively
+      if (!aiContent.lastChild || aiContent.lastChild.textContent !== d.textContent) {
         aiContent.appendChild(d);
         aiContent.scrollTop = aiContent.scrollHeight;
       }
+    }
 
-      if (data.status === 'ready' || data.status === 'failed') {
-        clearInterval(interval);
-        const finishDiv = document.createElement('div');
-        finishDiv.style.cssText = 'font-size:12px;font-weight:600;padding:6px 0;';
-        if (data.status === 'ready') {
-          finishDiv.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success)"></i> Processing complete!`;
-          if (typeof loadDesignsFromAPI === 'function') loadDesignsFromAPI();
-        } else {
-          finishDiv.innerHTML = `<i class="fas fa-times-circle" style="color:var(--danger)"></i> Conversion failed. Check server logs.`;
-        }
-        aiContent.appendChild(finishDiv);
+    // Terminate polling loop if processing sequence reaches a conclusion state
+    if (data.status === 'completed' || data.status === 'failed') {
+      clearInterval(pollInterval);
+      
+      const finishDiv = document.createElement('div');
+      finishDiv.style.cssText = 'font-size:12px;font-weight:600;padding:6px 0;';
+      
+      if (data.status === 'completed') {
+        finishDiv.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success)"></i> Core Processing Layout Finished!`;
+        if (typeof loadDesignsFromAPI === 'function') loadDesignsFromAPI();
+      } else {
+        finishDiv.innerHTML = `<i class="fas fa-times-circle" style="color:var(--danger)"></i> Conversion failed. Check server log output.`;
       }
-    } catch (_) { /* network blip — retry next tick */ }
-  }, 2000);
-  return () => clearInterval(interval); // caller can stop it early
-}
+      aiContent.appendChild(finishDiv);
+    }
+  } catch (err) {
+    console.error("Polling execution context error:", err);
+  }
+}, 2000); // Check for fresh processing updates every 2.0 seconds
 
-
+  
 
 function approveDWG() {
   APP.approvedDwgs.add('new');
@@ -3279,11 +3282,8 @@ window.startConversion = async function() {
     // ── Real-time progress via SSE ──────────────────────────────────────
     let sseActive = true;
     let es;
-    // startConversionPolling() is the SSE fallback for Cloudflare/proxy environments.
-    // stopPolling() cancels it as soon as SSE or the conversion POST confirms completion.
-    const stopPolling = startConversionPolling(APP.currentDesignId, aiContent);
     try {
-      es = new EventSource(`/api/convert/${APP.currentDesignId}/progress?token=${api.token}`);
+      es = new EventSource(`${API_BASE}/api/convert/${APP.currentDesignId}/progress?token=${api.token}`);
       es.onmessage = (evt) => {
         try {
           const data = JSON.parse(evt.data);
@@ -3299,7 +3299,6 @@ window.startConversion = async function() {
           }
           if (data.event === 'complete' || data.event === 'error') {
             sseActive = false;
-            stopPolling(); // SSE delivered the result — stop the poll fallback
             es.close();
           }
         } catch (_) {}
@@ -3313,11 +3312,37 @@ window.startConversion = async function() {
     document.getElementById('conversion-progress-panel').style.display = 'block';
     setStep(3);
 
+    // ── Render cold-start wake-up ─────────────────────────────────────────────
+    // Render free tier spins the server down after inactivity. The first request
+    // during wake-up returns 500/503 before the process is ready. We ping a cheap
+    // endpoint and retry until it responds 200, showing progress to the user.
+    {
+      const wakeDiv = document.createElement('div');
+      wakeDiv.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
+      wakeDiv.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="color:var(--accent);font-size:10px"></i> <span>Waking up server…</span>';
+      aiContent.appendChild(wakeDiv);
+
+      const MAX_WAKE_ATTEMPTS = 12; // 12 × 5s = 60s max wait
+      let woke = false;
+      for (let attempt = 0; attempt < MAX_WAKE_ATTEMPTS; attempt++) {
+        try {
+          const ping = await fetch(`${API_BASE}/api/auth/me`, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${api.token}` },
+          });
+          if (ping.ok || ping.status === 401) { woke = true; break; } // server is up
+        } catch (_) {} // still waking — swallow and retry
+        await new Promise(r => setTimeout(r, 5000));
+      }
+      wakeDiv.innerHTML = woke
+        ? '<i class="fas fa-check-circle" style="color:var(--success);font-size:10px"></i> <span>Server ready</span>'
+        : '<i class="fas fa-exclamation-circle" style="color:var(--warn);font-size:10px"></i> <span>Server slow to respond — attempting conversion anyway…</span>';
+    }
+
     try {
       // Kick off the actual conversion (server streams SSE while processing)
       const data = await api.post(`/api/convert/${APP.currentDesignId}`);
       sseActive = false;
-      stopPolling(); // POST resolved — cancel any remaining poll ticks
       if (es) es.close();
 
       if (data?.design) {
