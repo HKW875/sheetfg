@@ -2569,51 +2569,6 @@ function runConversion() {
 }
 
 
-// ─── NEW REPLACEMENT: SHORT-LIVED AJAX POLLING FOR CLOUDFLARE COMPATIBILITY ───
-let pollInterval = setInterval(async () => {
-  try {
-    const res = await fetch(`${API_BASE}/api/convert/${designId}/status`, {
-      headers: { 'Authorization': `Bearer ${api.token}` }
-    });
-    
-    if (!res.ok) throw new Error('Failed to query conversion status');
-    const data = await res.json();
-    
-    // Append the text updating message safely into your UI console
-    if (data.progress) {
-      const d = document.createElement('div');
-      d.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
-      d.innerHTML = `<i class="fas fa-circle-notch fa-spin" style="color:var(--accent);font-size:10px"></i> <span>${data.progress}</span>`;
-      
-      // Prevent duplicating the exact same log entry consecutively
-      if (!aiContent.lastChild || aiContent.lastChild.textContent !== d.textContent) {
-        aiContent.appendChild(d);
-        aiContent.scrollTop = aiContent.scrollHeight;
-      }
-    }
-
-    // Terminate polling loop if processing sequence reaches a conclusion state
-    if (data.status === 'completed' || data.status === 'failed') {
-      clearInterval(pollInterval);
-      
-      const finishDiv = document.createElement('div');
-      finishDiv.style.cssText = 'font-size:12px;font-weight:600;padding:6px 0;';
-      
-      if (data.status === 'completed') {
-        finishDiv.innerHTML = `<i class="fas fa-check-circle" style="color:var(--success)"></i> Core Processing Layout Finished!`;
-        if (typeof loadDesignsFromAPI === 'function') loadDesignsFromAPI();
-      } else {
-        finishDiv.innerHTML = `<i class="fas fa-times-circle" style="color:var(--danger)"></i> Conversion failed. Check server log output.`;
-      }
-      aiContent.appendChild(finishDiv);
-    }
-  } catch (err) {
-    console.error("Polling execution context error:", err);
-  }
-}, 2000); // Check for fresh processing updates every 2.0 seconds
-
-  
-
 function approveDWG() {
   APP.approvedDwgs.add('new');
   document.getElementById('approve-btn').innerHTML = '<i class="fas fa-check-circle"></i> Approved!';
@@ -3313,30 +3268,26 @@ window.startConversion = async function() {
     setStep(3);
 
     // ── Render cold-start wake-up ─────────────────────────────────────────────
-    // Render free tier spins the server down after inactivity. The first request
-    // during wake-up returns 500/503 before the process is ready. We ping a cheap
-    // endpoint and retry until it responds 200, showing progress to the user.
+    // Render free tier shuts the server down after inactivity. The first request
+    // during wake-up returns 500/503. We ping a cheap endpoint and wait until
+    // the server responds before firing the real conversion POST.
     {
       const wakeDiv = document.createElement('div');
       wakeDiv.style.cssText = 'font-size:12px;color:var(--text-dim);padding:3px 0;display:flex;align-items:center;gap:8px';
       wakeDiv.innerHTML = '<i class="fas fa-circle-notch fa-spin" style="color:var(--accent);font-size:10px"></i> <span>Waking up server…</span>';
       aiContent.appendChild(wakeDiv);
-
-      const MAX_WAKE_ATTEMPTS = 12; // 12 × 5s = 60s max wait
+      const MAX_WAKE_ATTEMPTS = 12; // 12 × 5 s = 60 s max
       let woke = false;
-      for (let attempt = 0; attempt < MAX_WAKE_ATTEMPTS; attempt++) {
+      for (let i = 0; i < MAX_WAKE_ATTEMPTS; i++) {
         try {
-          const ping = await fetch(`${API_BASE}/api/auth/me`, {
-            method: 'GET',
-            headers: { 'Authorization': `Bearer ${api.token}` },
-          });
-          if (ping.ok || ping.status === 401) { woke = true; break; } // server is up
-        } catch (_) {} // still waking — swallow and retry
+          const p = await fetch(`${API_BASE}/api/auth/me`, { headers: { 'Authorization': `Bearer ${api.token}` } });
+          if (p.ok || p.status === 401) { woke = true; break; }
+        } catch (_) {}
         await new Promise(r => setTimeout(r, 5000));
       }
       wakeDiv.innerHTML = woke
         ? '<i class="fas fa-check-circle" style="color:var(--success);font-size:10px"></i> <span>Server ready</span>'
-        : '<i class="fas fa-exclamation-circle" style="color:var(--warn);font-size:10px"></i> <span>Server slow to respond — attempting conversion anyway…</span>';
+        : '<i class="fas fa-exclamation-circle" style="color:var(--warn);font-size:10px"></i> <span>Server slow — attempting anyway…</span>';
     }
 
     try {
