@@ -3128,19 +3128,78 @@ window.doSignup = async function() {
 // BACKEND-CONNECTED UPLOAD
 // ================================================================
 const _origProcessFile = processFile;
-window.processFile = function(file) {
+window.processFile = async function(file) {
   _origProcessFile(file);
 
-  // Also upload to backend if available
-  const formData = new FormData();
-  formData.append('file', file);
-  formData.append('partName', file.name.replace(/\.[^.]+$/, ''));
-  api.upload(formData).then(data => {
+  // Reset any stale design ID from a previous upload
+  APP.currentDesignId = null;
+
+  // Must be logged in to register a design on the backend
+  if (!api.token) {
+    console.warn('[SheetForge] No auth token — file stored locally only. Log in then re-upload.');
+    const convertBtn = document.getElementById('convert-btn');
+    if (convertBtn) {
+      convertBtn.disabled = false;
+      convertBtn.innerHTML = '<i class="fas fa-magic"></i> Convert';
+    }
+    // Show a gentle inline hint so the user knows what to do
+    const aiContent = document.getElementById('ai-analysis-content');
+    if (aiContent) {
+      aiContent.innerHTML = `
+        <div style="padding:12px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:var(--r);font-size:12px;color:var(--warn)">
+          <i class="fas fa-lock" style="margin-right:6px"></i>
+          <strong>Log in first,</strong> then re-upload your file to register it with the backend and enable AI conversion.
+        </div>`;
+      document.getElementById('ai-analysis-panel').style.display = 'block';
+    }
+    return;
+  }
+
+  // Show an uploading indicator on the convert button
+  const convertBtn = document.getElementById('convert-btn');
+  if (convertBtn) {
+    convertBtn.disabled = true;
+    convertBtn.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Registering…';
+  }
+
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('partName', file.name.replace(/\.[^.]+$/, ''));
+
+    const data = await api.upload(formData);
+
     if (data?.design) {
       APP.currentDesignId = data.design._id;
-      console.log('Design registered:', data.design._id);
+      console.log('[SheetForge] Design registered on backend:', data.design._id);
+      if (convertBtn) {
+        convertBtn.disabled = false;
+        convertBtn.innerHTML = '<i class="fas fa-magic"></i> Convert';
+      }
+    } else {
+      throw new Error('Backend did not return a design record');
     }
-  });
+  } catch (err) {
+    console.error('[SheetForge] Backend upload failed:', err.message);
+    APP.currentDesignId = null;
+    if (convertBtn) {
+      convertBtn.disabled = false;
+      convertBtn.innerHTML = '<i class="fas fa-magic"></i> Convert';
+    }
+    // Surface the error clearly in the analysis panel
+    const aiContent = document.getElementById('ai-analysis-content');
+    if (aiContent) {
+      aiContent.innerHTML = `
+        <div style="padding:12px 14px;background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.25);border-radius:var(--r);font-size:12px;color:var(--danger)">
+          <i class="fas fa-exclamation-triangle" style="margin-right:6px"></i>
+          <strong>Backend upload failed:</strong> ${err.message}.<br>
+          <span style="color:var(--text-dim);font-size:11px;margin-top:4px;display:block">
+            Check that the server is running and your session is valid, then re-upload.
+          </span>
+        </div>`;
+      document.getElementById('ai-analysis-panel').style.display = 'block';
+    }
+  }
 };
 
 // ================================================================
@@ -3382,16 +3441,30 @@ window.startConversion = async function() {
     }
   }
 
-  // No design ID / not logged into backend — show informational message only
+  // ── Diagnose exactly why we can't proceed ─────────────────────────
+  // Reaching here means either: no token, or upload didn't produce a design ID.
   document.getElementById('convert-btn').disabled = false;
   document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Convert';
   const aiContent = document.getElementById('ai-analysis-content');
   if (aiContent) {
+    let msg = '';
+    if (!api.token) {
+      msg = `<i class="fas fa-lock" style="margin-right:6px"></i>
+             <strong>Not logged in.</strong> Please sign in first, then re-upload your file to enable AI conversion.`;
+    } else if (!APP.currentDesignId) {
+      msg = `<i class="fas fa-cloud-upload-alt" style="margin-right:6px"></i>
+             <strong>File not registered with backend.</strong>
+             The upload may have failed or occurred before you were logged in.
+             Please re-upload your file to register it, then click Convert again.`;
+    } else {
+      msg = `<i class="fas fa-info-circle" style="margin-right:6px"></i>
+             <strong>Session error.</strong> Please refresh the page, log in, and re-upload your file.`;
+    }
     aiContent.innerHTML = `
       <div style="padding:12px 14px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.25);border-radius:var(--r);font-size:12px;color:var(--warn)">
-        <i class="fas fa-info-circle"></i>
-        <strong> No active session.</strong> Please upload a file and log in to run the AI conversion pipeline.
+        ${msg}
       </div>`;
+    document.getElementById('ai-analysis-panel').style.display = 'block';
   }
 };
 
@@ -3584,7 +3657,10 @@ window.addEventListener('load', async () => {
         return;
       }
     } catch (_) {
+      // Token invalid — clear it so the user isn't stuck with a stale session
       localStorage.removeItem('sf_token');
+      api.token = null;
+      APP.currentDesignId = null;
     }
   }
 });
