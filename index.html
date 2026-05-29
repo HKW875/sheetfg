@@ -2860,94 +2860,163 @@ function initDwgCanvas() {
   canvas.onwheel = e => { e.preventDefault(); APP.dwgScale *= e.deltaY < 0 ? 1.1 : 0.9; APP.dwgScale = Math.max(0.2, Math.min(8, APP.dwgScale)); drawDWG(); document.getElementById('info-scale').textContent = APP.dwgScale.toFixed(2) + ':1'; };
 }
 
+// ================================================================
+// DWG RENDER ENGINE UTILS WITH CANVAS VIEWPORT ASSIGNMENT
+// ================================================================
 function loadDwg(name) {
   APP.currentDwg = name;
-  APP.dwgScale = 1; APP.dwgOffX = 0; APP.dwgOffY = 0;
-  drawDWG();
-  // Update info
+  const container = document.getElementById('dwg-main-viewer');
+  
+  // Guard clause to ensure we inject the canvas securely if not present without layout breakdown
+  if (container && !document.getElementById('dwg-canvas')) {
+    container.innerHTML = '<canvas id="dwg-canvas" class="dwg-canvas"></canvas>';
+  }
+  
+  initDwgCanvas();
+  
+  // Set explicit size attributes based on sample data
   const configs = {
     bracket: { w: 240, h: 160, entities: 48 },
     enclosure: { w: 380, h: 280, entities: 72 },
     panel: { w: 600, h: 200, entities: 95 },
   };
-  const cfg = configs[name] || configs.bracket;
+  const cfg = configs[name] || { w: 300, h: 200, entities: 30 };
+  
   const iw = document.getElementById('info-w'), ih = document.getElementById('info-h');
   if (iw) iw.textContent = cfg.w;
   if (ih) ih.textContent = cfg.h;
-  const vs = document.getElementById('viewer-approve-btn');
-  if (vs && APP.approvedDwgs.has(name)) {
-    vs.innerHTML = '<i class="fas fa-check-circle"></i> Approved';
-    vs.className = 'btn btn-success';
-    document.getElementById('viewer-save-btn').style.display = 'flex';
-  } else if (vs) {
-    vs.innerHTML = '<i class="fas fa-check"></i> Approve';
-    vs.className = 'btn';
-    document.getElementById('viewer-save-btn').style.display = 'none';
-  }
+  
+  // Trigger standard redraw canvas frame pipeline
+  drawDWG();
 }
 
 function drawDWG() {
   const canvas = document.getElementById('dwg-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  const s = APP.dwgScale;
-  const ox = W/2 + APP.dwgOffX;
-  const oy = H/2 + APP.dwgOffY;
-
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(0, 0, W, H);
-
-  // Grid
-  ctx.strokeStyle = '#e0e8f0';
-  ctx.lineWidth = 0.5;
-  const gs = 20 * s;
-  const gox = ((ox % gs) + gs) % gs;
-  const goy = ((oy % gs) + gs) % gs;
-  for (let x = gox; x < W; x += gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
-  for (let y = goy; y < H; y += gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
-
-  // Origin cross
-  ctx.strokeStyle = '#ccd4dc';
-  ctx.lineWidth = 0.5;
-  ctx.beginPath(); ctx.moveTo(ox - 10, oy); ctx.lineTo(ox + 10, oy); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(ox, oy - 10); ctx.lineTo(ox, oy + 10); ctx.stroke();
-
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  
   ctx.save();
-  ctx.translate(ox, oy);
-  ctx.scale(s, s);
+  // Center drawing model view matrix context space
+  ctx.translate(canvas.width / 2 + APP.dwgOffX, canvas.height / 2 + APP.dwgOffY);
+  ctx.scale(APP.dwgScale, APP.dwgScale);
+  
+  // Draw systemic construction grid background line layers
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.04)';
+  ctx.lineWidth = 0.5;
+  const gridSize = 40;
+  for (let x = -2000; x <= 2000; x += gridSize) {
+    ctx.beginPath(); ctx.moveTo(x, -2000); ctx.lineTo(x, 2000); ctx.stroke();
+  }
+  for (let y = -2000; y <= 2000; y += gridSize) {
+    ctx.beginPath(); ctx.moveTo(-2000, y); ctx.lineTo(2000, y); ctx.stroke();
+  }
 
-  // Draw bracket shape
-  const shapes = getDwgShapes(APP.currentDwg);
-  shapes.forEach(shape => {
-    ctx.strokeStyle = shape.color || '#1a2a3a';
-    ctx.lineWidth = (shape.lw || 1.5) / s;
-    if (shape.dash) ctx.setLineDash(shape.dash.map(d => d / s));
-    else ctx.setLineDash([]);
-    if (shape.fill) { ctx.fillStyle = shape.fill; }
+  // Draw coordinate axis crosshairs
+  ctx.strokeStyle = 'rgba(61, 126, 255, 0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(-2000, 0); ctx.lineTo(2000, 0); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, -2000); ctx.lineTo(0, 2000); ctx.stroke();
 
-    if (shape.type === 'rect') {
-      ctx.beginPath();
-      ctx.rect(shape.x, shape.y, shape.w, shape.h);
-      if (shape.fill) ctx.fill();
-      ctx.stroke();
-    } else if (shape.type === 'line') {
-      ctx.beginPath(); ctx.moveTo(shape.x1, shape.y1); ctx.lineTo(shape.x2, shape.y2); ctx.stroke();
-    } else if (shape.type === 'circle') {
-      ctx.beginPath(); ctx.arc(shape.cx, shape.cy, shape.r, 0, Math.PI * 2);
-      if (shape.fill) ctx.fill();
-      ctx.stroke();
-    } else if (shape.type === 'arc') {
-      ctx.beginPath(); ctx.arc(shape.cx, shape.cy, shape.r, shape.a1, shape.a2); ctx.stroke();
-    } else if (shape.type === 'text') {
-      ctx.fillStyle = shape.color || '#1a2a3a';
-      ctx.font = `${(shape.size || 8) / s}px DM Mono, monospace`;
-      ctx.fillText(shape.text, shape.x, shape.y);
+  // CHECK IF REAL PIPELINE EXTRACTED_DATA OBJECT IS READY VIA CONVERSION CONTEXT
+  if (APP.currentDwgData && APP.currentDwgData.extracted_data) {
+    const data = APP.currentDwgData.extracted_data;
+    
+    // 1. Draw Lines (Layer: 0_OUTLINE)
+    if (data.lines) {
+      ctx.strokeStyle = '#1a2a3a';
+      ctx.lineWidth = 1.5;
+      data.lines.forEach(l => {
+        ctx.beginPath();
+        ctx.moveTo(l.x1 - (APP.currentDwgData.analysis?.width / 2 || 0), l.y1 - (APP.currentDwgData.analysis?.height / 2 || 0));
+        ctx.lineTo(l.x2 - (APP.currentDwgData.analysis?.width / 2 || 0), l.y2 - (APP.currentDwgData.analysis?.height / 2 || 0));
+        ctx.stroke();
+      });
     }
-  });
+    
+    // 2. Draw Circles
+    if (data.circles) {
+      ctx.strokeStyle = '#1a2a3a';
+      ctx.lineWidth = 1.5;
+      data.circles.forEach(c => {
+        ctx.beginPath();
+        ctx.arc(c.cx - (APP.currentDwgData.analysis?.width / 2 || 0), c.cy - (APP.currentDwgData.analysis?.height / 2 || 0), c.radius, 0, 2 * Math.PI);
+        ctx.stroke();
+      });
+    }
+    
+    // 3. Draw Small Drill Holes (Layer: 2_HOLES)
+    if (data.small_circles) {
+      ctx.strokeStyle = '#00d4a0';
+      ctx.lineWidth = 1.2;
+      data.small_circles.forEach(sc => {
+        ctx.beginPath();
+        ctx.arc(sc.cx - (APP.currentDwgData.analysis?.width / 2 || 0), sc.cy - (APP.currentDwgData.analysis?.height / 2 || 0), sc.radius, 0, 2 * Math.PI);
+        ctx.stroke();
+        // Draw centered crosshair tick inside small holes
+        ctx.moveTo(sc.cx - (APP.currentDwgData.analysis?.width / 2 || 0) - 3, sc.cy - (APP.currentDwgData.analysis?.height / 2 || 0));
+        ctx.lineTo(sc.cx - (APP.currentDwgData.analysis?.width / 2 || 0) + 3, sc.cy - (APP.currentDwgData.analysis?.height / 2 || 0));
+        ctx.moveTo(sc.cx - (APP.currentDwgData.analysis?.width / 2 || 0), sc.cy - (APP.currentDwgData.analysis?.height / 2 || 0) - 3);
+        ctx.lineTo(sc.cx - (APP.currentDwgData.analysis?.width / 2 || 0), sc.cy - (APP.currentDwgData.analysis?.height / 2 || 0) + 3);
+        ctx.stroke();
+      });
+    }
+
+    // 4. Draw Curves / Continuous Bend Lines
+    if (data.curves) {
+      ctx.strokeStyle = '#e67700';
+      ctx.lineWidth = 1.2;
+      data.curves.forEach(cv => {
+        if (!cv.points || cv.points.length < 2) return;
+        ctx.beginPath();
+        ctx.moveTo(cv.points[0][0] - (APP.currentDwgData.analysis?.width / 2 || 0), cv.points[0][1] - (APP.currentDwgData.analysis?.height / 2 || 0));
+        for (let i = 1; i < cv.points.length; i++) {
+          ctx.lineTo(cv.points[i][0] - (APP.currentDwgData.analysis?.width / 2 || 0), cv.points[i][1] - (APP.currentDwgData.analysis?.height / 2 || 0));
+        }
+        ctx.stroke();
+      });
+    }
+
+    // 5. Draw Dimensions Text
+    if (data.dimensions) {
+      ctx.fillStyle = '#4a6480';
+      ctx.font = '10px DM Mono, monospace';
+      data.dimensions.forEach(d => {
+        ctx.fillText(d.text, d.x - (APP.currentDwgData.analysis?.width / 2 || 0), d.y - (APP.currentDwgData.analysis?.height / 2 || 0));
+      });
+    }
+
+    // 6. Draw Extracted Handwritten Notes
+    if (data.handwriting) {
+      ctx.fillStyle = '#3d7eff';
+      ctx.font = 'italic 11px Instrument Sans, sans-serif';
+      data.handwriting.forEach(hw => {
+        ctx.fillText(hw.text, hw.x - (APP.currentDwgData.analysis?.width / 2 || 0), hw.y - (APP.currentDwgData.analysis?.height / 2 || 0));
+      });
+    }
+
+  } else {
+    // FALLBACK ENGINE: Draw hardcoded layout presets if no backend telemetry payload has been handled yet
+    const shapes = getDwgShapes(APP.currentDwg);
+    shapes.forEach(shape => {
+      ctx.lineWidth = shape.lw || 1;
+      ctx.strokeStyle = shape.color || '#1a2a3a';
+      
+      if (shape.type === 'rect') {
+        ctx.strokeRect(shape.x, shape.y, shape.w, shape.h);
+      } else if (shape.type === 'circle') {
+        ctx.beginPath();
+        ctx.arc(shape.cx, shape.cy, shape.r, 0, 2 * Math.PI);
+        ctx.stroke();
+      } else if (shape.type === 'text') {
+        ctx.fillStyle = shape.color || '#1a2a3a';
+        ctx.font = `${shape.size || 8}px DM Mono, monospace`;
+        ctx.fillText(shape.text, shape.x, shape.y);
+      }
+    });
+  }
+
   ctx.restore();
-  ctx.setLineDash([]);
 }
 
 function getDwgShapes(name) {
