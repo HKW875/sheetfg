@@ -1434,25 +1434,37 @@
       </div>
       <div style="padding:28px">
         <div class="grid-2" style="gap:20px">
-          <!-- Canvas Viewer -->
+          <!-- PDF Viewer — displays the reportlab PDF from process.py -->
           <div style="grid-column:1/-1">
-            <div class="dwg-viewer" id="dwg-main-viewer">
-              <canvas id="dwg-canvas" class="dwg-canvas"></canvas>
+            <div class="dwg-viewer" id="dwg_main_viewer" style="position:relative;overflow:hidden;background:#0d1117;border-radius:var(--r);min-height:520px">
+              <!-- PDF embed — shown after a successful conversion -->
+              <iframe
+                id="dwg-pdf-frame"
+                style="display:none;width:100%;height:520px;border:none;background:#0d1117"
+                title="Drawing PDF Viewer"
+              ></iframe>
+              <!-- Toolbar (always visible) -->
               <div class="dwg-toolbar">
-                <div class="dwg-tool" onclick="dwgZoom(1.2)" data-tip="Zoom In"><i class="fas fa-plus"></i></div>
-                <div class="dwg-tool" onclick="dwgZoom(0.8)" data-tip="Zoom Out"><i class="fas fa-minus"></i></div>
-                <div class="dwg-tool" onclick="dwgFitView()" data-tip="Fit View"><i class="fas fa-expand"></i></div>
-                <div class="dwg-tool" onclick="dwgPan()" data-tip="Pan"><i class="fas fa-hand-paper"></i></div>
-                <div class="dwg-tool" onclick="dwgMeasure()" data-tip="Measure"><i class="fas fa-ruler"></i></div>
-                <div class="dwg-tool" onclick="dwgLayers()" data-tip="Layers"><i class="fas fa-layer-group"></i></div>
+                <div class="dwg-tool" onclick="dwgPdfAction('zoomIn')"  data-tip="Zoom In"><i class="fas fa-plus"></i></div>
+                <div class="dwg-tool" onclick="dwgPdfAction('zoomOut')" data-tip="Zoom Out"><i class="fas fa-minus"></i></div>
+                <div class="dwg-tool" onclick="dwgPdfAction('fit')"     data-tip="Fit View"><i class="fas fa-expand"></i></div>
+                <div class="dwg-tool" onclick="dwgPdfAction('download')" data-tip="Download PDF"><i class="fas fa-download"></i></div>
+                <div class="dwg-tool" onclick="dwgLayers()"             data-tip="Layers"><i class="fas fa-layer-group"></i></div>
               </div>
+              <!-- Info bar -->
               <div class="dwg-info" id="dwg-info">
-                <div class="dwg-info-item">Scale: <span id="info-scale">1:1</span></div>
                 <div class="dwg-info-item">Units: <span>mm</span></div>
-                <div class="dwg-info-item">Width: <span id="info-w">240</span>mm</div>
-                <div class="dwg-info-item">Height: <span id="info-h">160</span>mm</div>
-                <div class="dwg-info-item">Layers: <span>5</span></div>
-                <div class="dwg-info-item">Entities: <span>48</span></div>
+                <div class="dwg-info-item">Width: <span id="info-w">—</span>mm</div>
+                <div class="dwg-info-item">Height: <span id="info-h">—</span>mm</div>
+                <div class="dwg-info-item">Entities: <span id="info-entities">—</span></div>
+              </div>
+              <!-- Placeholder shown before first conversion -->
+              <div id="dwg-placeholder" style="
+                position:absolute;inset:0;display:flex;flex-direction:column;
+                align-items:center;justify-content:center;gap:12px;
+                color:var(--text-dim);pointer-events:none">
+                <i class="fas fa-file-pdf" style="font-size:48px;opacity:0.25"></i>
+                <span style="font-size:13px">Upload an image and run Convert to display the drawing PDF here</span>
               </div>
             </div>
           </div>
@@ -2665,6 +2677,28 @@ async function startConversion() {
       document.getElementById('dwg-filename').textContent = data.design.dwg?.filename || 'part.dxf';
       document.getElementById('dim-confidence').textContent =
         `DXF R2018 (ezdxf) • ${a.profileType || 'Profile'} • ${a.confidence || 0}% confidence`;
+
+      // ── Update info bar in viewer ──────────────────────────────
+      const iw = document.getElementById('info-w');
+      const ih = document.getElementById('info-h');
+      const ie = document.getElementById('info-entities');
+      if (iw) iw.textContent = a.width  ? a.width.toFixed(0)  : '—';
+      if (ih) ih.textContent = a.height ? a.height.toFixed(0) : '—';
+      if (ie) ie.textContent = data.design.dwg?.entities ?? '—';
+
+      // ── Inject PDF into dwg_main_viewer ───────────────────────
+      if (data.pdfReady && data.pdfUrl) {
+        const frame       = document.getElementById('dwg-pdf-frame');
+        const placeholder = document.getElementById('dwg-placeholder');
+        if (frame) {
+          frame.src         = `${API_BASE}${data.pdfUrl}?token=${api.token}`;
+          frame.style.display = 'block';
+        }
+        if (placeholder) placeholder.style.display = 'none';
+        // Store URL for toolbar download action
+        APP.currentPdfUrl = `${API_BASE}${data.pdfUrl}?token=${api.token}`;
+      }
+
       if (data.steps?.length) {
         data.steps.forEach(s => {
           const d = document.createElement('div');
@@ -2681,7 +2715,7 @@ async function startConversion() {
       document.getElementById('conv-status-badge').className = 'badge badge-ready';
       document.getElementById('conv-status-badge').textContent = 'Complete';
       setStep(4);
-      showNotif('success', 'DXF + G-Code Ready', `${a.edges || 0} entities extracted.`);
+      showNotif('success', 'DXF + PDF Ready', `${a.edges || 0} entities extracted.`);
       document.getElementById('convert-btn').disabled = false;
       document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Re-convert';
     }
@@ -3079,22 +3113,35 @@ function getDwgShapes(name) {
   return shapes;
 }
 
+// ================================================================
+// PDF VIEWER TOOLBAR  (dwg_main_viewer — iframe-based PDF display)
+// ================================================================
+function dwgPdfAction(action) {
+  const frame = document.getElementById('dwg-pdf-frame');
+  if (action === 'download' && APP.currentPdfUrl) {
+    const a = document.createElement('a');
+    a.href     = APP.currentPdfUrl;
+    a.download = `${APP.currentDesign?.partName || 'drawing'}.pdf`;
+    a.click();
+    return;
+  }
+  if (!frame) return;
+  // Reload the iframe src with a PDF open parameter to hint zoom level
+  const base = (frame.src || '').split('#')[0];
+  if (!base) return;
+  if (action === 'fit')     frame.src = base + '#view=Fit';
+  if (action === 'zoomIn')  frame.src = base + '#zoom=150';
+  if (action === 'zoomOut') frame.src = base + '#zoom=75';
+}
+
 function dwgZoom(factor) {
-  APP.dwgScale *= factor;
-  APP.dwgScale = Math.max(0.2, Math.min(8, APP.dwgScale));
-  drawDWG();
-  document.getElementById('info-scale').textContent = APP.dwgScale.toFixed(2) + ':1';
+  dwgPdfAction(factor > 1 ? 'zoomIn' : 'zoomOut');
 }
+function dwgFitView() { dwgPdfAction('fit'); }
+function dwgPan()     { showNotif('info', 'Pan Mode', 'Scroll or drag inside the PDF viewer to pan'); }
+function dwgMeasure() { showNotif('info', 'Measure', 'Open the PDF in full-screen for precise measurements'); }
+function dwgLayers()  { showNotif('info', 'Layers', 'Layer visibility is defined in the DXF — download it to inspect in a CAD tool'); }
 
-function dwgFitView() {
-  APP.dwgScale = 1; APP.dwgOffX = 0; APP.dwgOffY = 0;
-  drawDWG();
-  document.getElementById('info-scale').textContent = '1:1';
-}
-
-function dwgPan() { showNotif('info', 'Pan Mode', 'Click and drag to pan'); }
-function dwgMeasure() { showNotif('info', 'Measure', 'Click two points to measure distance'); }
-function dwgLayers() { showNotif('info', 'Layers', 'Layer visibility control'); }
 
 function downloadDWG() {
   showNotif('success', 'Download Started', `${APP.currentDwg}.dwg downloading...`);
