@@ -2596,11 +2596,10 @@ async function startConversion() {
   aiContent.innerHTML = '';
   setStep(2);
 
-  // ── WebSocket progress stream ────────────────────────────────
-  let es; // named 'es' for backward compat with close() calls below
+  // ── SSE progress stream ───────────────────────────────────────
+  let es;
   try {
-    const wsUrl = `${WS_BASE}/ws?token=${encodeURIComponent(api.token)}&designId=${APP.currentDesignId}`;
-    es = new WebSocket(wsUrl);
+    es = new EventSource(`${API_BASE}/api/convert/${APP.currentDesignId}/progress?token=${api.token}`);
     es.onmessage = (evt) => {
       try {
         const d = JSON.parse(evt.data);
@@ -2614,7 +2613,7 @@ async function startConversion() {
         if (d.event === 'complete' || d.event === 'error') es.close();
       } catch(_) {}
     };
-    es.onerror = () => { try { es.close(); } catch(_) {} };
+    es.onerror = () => es.close();
   } catch(_) {}
 
   document.getElementById('conversion-progress-panel').style.display = 'block';
@@ -2644,7 +2643,7 @@ async function startConversion() {
       method: 'POST',
       headers: { 'Content-Type':'application/json', Authorization:`Bearer ${api.token}` },
     });
-    if (es && es.readyState < 2) es.close();
+    if (es) es.close();
 
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.includes('application/json')) {
@@ -2687,7 +2686,7 @@ async function startConversion() {
       document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Re-convert';
     }
   } catch (err) {
-    if (es && es.readyState < 2) es.close();
+    if (es) es.close();
     document.getElementById('analysis-spinner').style.display = 'none';
     document.getElementById('convert-btn').disabled = false;
     document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Retry';
@@ -3226,8 +3225,7 @@ function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
 // ================================================================
 // API CLIENT — connects to server.js backend
 // ================================================================
-const API_BASE = 'https://sheetbackend-9rpx.onrender.com'; // same-origin in production
-const WS_BASE  = API_BASE.replace(/^https?/, (m) => m === 'https' ? 'wss' : 'ws');
+const API_BASE = 'https://sheetbackend-9rpx.onrender.com' // same-origin in production
 
 const api = {
   token: localStorage.getItem('sf_token') || null,
