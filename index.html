@@ -1374,7 +1374,7 @@
                   </div>
                 </div>
                 <div class="flex gap-8">
-                  <button class="btn flex-1" onclick="showPage('viewer')"><i class="fas fa-eye"></i> View Drawing</button>
+                  <button class="btn flex-1" onclick="viewConvertedDrawing()"><i class="fas fa-eye"></i> View Drawing</button>
                   <button class="btn btn-success flex-1" onclick="approveDWG()" id="approve-btn"><i class="fas fa-check"></i> Approve</button>
                 </div>
               </div>
@@ -2684,6 +2684,9 @@ async function startConversion() {
       showNotif('success', 'DXF + G-Code Ready', `${a.edges || 0} entities extracted.`);
       document.getElementById('convert-btn').disabled = false;
       document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Re-convert';
+
+      // ── Load preview into dwg-main-viewer BEFORE cloud save ──────
+      loadConvertedDesignIntoViewer(data);
     }
   } catch (err) {
     if (es) es.close();
@@ -2757,12 +2760,173 @@ function runConversion() {
 }
 
 
+// ================================================================
+// DWG PREVIEW LOADER — displays converted design in dwg-main-viewer
+// ================================================================
+
+/**
+ * Fetches the SVG/PNG preview for the just-converted design and
+ * injects it into #dwg-main-viewer, then populates APP.currentDwgData
+ * so the canvas renderer can also draw the real extracted geometry.
+ */
+async function loadConvertedDesignIntoViewer(data) {
+  if (!data?.design?._id || !api.token) return;
+
+  const designId = data.design._id;
+  APP.currentDesignId = designId;
+
+  // Populate APP.currentDwgData so the canvas renderer has real geometry
+  if (data.analysis) {
+    APP.currentDwgData = {
+      analysis      : data.analysis,
+      extracted_data: data.analysis.extracted_data || null,
+    };
+  }
+
+  const viewer = document.getElementById('dwg-main-viewer');
+  if (!viewer) return;
+
+  // Show a loading shimmer inside the viewer while we fetch
+  const canvas   = document.getElementById('dwg-canvas');
+  const toolbar  = viewer.querySelector('.dwg-toolbar');
+  const infoBar  = viewer.querySelector('.dwg-info');
+
+  // Insert a preview overlay above the canvas (removed once loaded)
+  let overlay = document.getElementById('dwg-preview-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'dwg-preview-overlay';
+    overlay.style.cssText = [
+      'position:absolute;inset:0;z-index:4',
+      'display:flex;flex-direction:column;align-items:center;justify-content:center',
+      'background:var(--bg2)',
+      'border-radius:var(--r-lg)',
+      'overflow:hidden',
+    ].join(';');
+    viewer.style.position = 'relative';
+    viewer.appendChild(overlay);
+  }
+
+  // Loading state
+  overlay.innerHTML = `
+    <div style="display:flex;flex-direction:column;align-items:center;gap:14px;color:var(--text-dim)">
+      <div class="spinner" style="width:32px;height:32px;border-width:3px;border-color:var(--accent)"></div>
+      <div style="font-size:13px;font-weight:500">Loading preview…</div>
+    </div>`;
+
+  try {
+    const resp = await fetch(`${API_BASE}/api/designs/${designId}/preview-inline`, {
+      headers: { Authorization: `Bearer ${api.token}` },
+    });
+
+    if (!resp.ok) throw new Error(`Preview fetch failed: ${resp.status}`);
+    const pdata = await resp.json();
+
+    if (pdata.dataUri) {
+      // ── SVG / PNG preview ──────────────────────────────────────
+      const isSvg = pdata.ext === 'svg';
+
+      if (isSvg) {
+        // Decode and inject raw SVG so it scales perfectly
+        const svgText = atob(pdata.dataUri.split(',')[1]);
+        overlay.innerHTML = '';
+        const wrapper = document.createElement('div');
+        wrapper.style.cssText = 'width:100%;height:100%;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px';
+        wrapper.innerHTML = svgText;
+
+        // Make injected SVG responsive
+        const svgEl = wrapper.querySelector('svg');
+        if (svgEl) {
+          svgEl.style.maxWidth  = '100%';
+          svgEl.style.maxHeight = '460px';
+          svgEl.style.width     = '100%';
+          svgEl.removeAttribute('width');
+          svgEl.removeAttribute('height');
+          if (!svgEl.getAttribute('viewBox')) {
+            const w = pdata.analysis?.width  || 300;
+            const h = pdata.analysis?.height || 200;
+            svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
+          }
+        }
+        overlay.appendChild(wrapper);
+      } else {
+        // PNG / JPEG — show as <img>
+        overlay.innerHTML = '';
+        const img = document.createElement('img');
+        img.src = pdata.dataUri;
+        img.alt = pdata.partName || 'Design preview';
+        img.style.cssText = 'max-width:100%;max-height:460px;object-fit:contain;border-radius:var(--r)';
+        overlay.appendChild(img);
+      }
+
+      // Update info bar with real values
+      const a = pdata.analysis || {};
+      const iw = document.getElementById('info-w');
+      const ih = document.getElementById('info-h');
+      if (iw) iw.textContent = a.width  ? Math.round(a.width)  : '—';
+      if (ih) ih.textContent = a.height ? Math.round(a.height) : '—';
+
+      // Add a thin "dismiss / switch to canvas" strip at the bottom of the overlay
+      const dismiss = document.createElement('div');
+      dismiss.style.cssText = [
+        'position:absolute;bottom:0;left:0;right:0',
+        'padding:8px 16px',
+        'background:linear-gradient(to top,rgba(10,12,15,0.92),transparent)',
+        'display:flex;align-items:center;justify-content:space-between',
+        'font-size:11px;color:var(--text-dim)',
+      ].join(';');
+      dismiss.innerHTML = `
+        <span><i class="fas fa-check-circle" style="color:var(--success);margin-right:6px"></i>
+          ${pdata.filename || 'preview'} — ready for review</span>
+        <button onclick="document.getElementById('dwg-preview-overlay').remove();drawDWG();"
+          style="background:var(--bg3);border:1px solid var(--border-med);color:var(--text-dim);
+                 border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">
+          <i class="fas fa-drafting-compass"></i> Canvas view
+        </button>`;
+      overlay.appendChild(dismiss);
+
+      showNotif('success', 'Preview Ready', `${pdata.filename} loaded in viewer`);
+
+    } else {
+      throw new Error('No preview data returned');
+    }
+  } catch (err) {
+    // Graceful fallback — hide overlay, let canvas draw the extracted geometry
+    console.warn('[SheetForge] Preview inline fetch failed:', err.message);
+    overlay.innerHTML = `
+      <div style="font-size:12px;color:var(--text-dim);padding:20px;text-align:center">
+        <i class="fas fa-drafting-compass" style="font-size:28px;margin-bottom:10px;display:block;color:var(--accent)"></i>
+        Preview unavailable — canvas view active
+      </div>`;
+    setTimeout(() => { overlay.remove(); drawDWG(); }, 1800);
+  }
+}
+
+/**
+ * Navigate to the CAD Viewer page and load the converted design.
+ * Called by the "View Drawing" button once conversion is complete.
+ */
+function viewConvertedDrawing() {
+  showPage('viewer');
+  // The overlay was already created by loadConvertedDesignIntoViewer;
+  // re-init the canvas behind it in case the viewer page was not yet rendered.
+  setTimeout(() => {
+    initDwgCanvas();
+    // If we have real geometry, drawDWG will use it; otherwise fallback shapes
+    drawDWG();
+  }, 100);
+}
+
 function approveDWG() {
   APP.approvedDwgs.add('new');
   document.getElementById('approve-btn').innerHTML = '<i class="fas fa-check-circle"></i> Approved!';
   document.getElementById('approve-btn').className = 'btn btn-success flex-1';
   setStep(5);
   showNotif('success', 'Design Approved', 'Ready to save to Cloudinary');
+  // Ensure preview is loaded in viewer — loadConvertedDesignIntoViewer is idempotent
+  if (APP.currentDesign && !document.getElementById('dwg-preview-overlay')) {
+    loadConvertedDesignIntoViewer({ design: APP.currentDesign, analysis: APP.currentDesign.aiAnalysis });
+  }
   setTimeout(() => openCloudSaveModal(), 1500);
 }
 
