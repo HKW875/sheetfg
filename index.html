@@ -3617,23 +3617,37 @@ function populateGCodeButtons(designId) {
 }
 
 async function downloadDXF() {
-  if (!APP.currentDesignId || !api.token) { showNotif('error','Not Ready','Run conversion first'); return; }
+  if (!APP.currentDesignId || !api.token) {
+    showNotif('error', 'Not Ready', 'Run conversion first');
+    return;
+  }
+
   const url = `${API_BASE}/api/designs/${APP.currentDesignId}/dxf`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.setAttribute('Authorization', `Bearer ${api.token}`);
-  // Use fetch to download with auth header
+
   try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${api.token}` } });
-    if (!res.ok) throw new Error('Download failed');
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${api.token}` }
+    });
+
+    if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
+
     const blob = await res.blob();
     const objUrl = URL.createObjectURL(blob);
+
     const link = document.createElement('a');
     link.href = objUrl;
-    link.download = (APP.currentDesign?.dwg?.filename || 'part.dxf');
+    link.download = APP.currentDesign?.dwg?.filename || 'part.dxf';
+    document.body.appendChild(link); // Required in some browsers
     link.click();
+    document.body.removeChild(link); // Cleanup
+
     URL.revokeObjectURL(objUrl);
-  } catch (e) { showNotif('error','DXF Download Failed', e.message); }
+    showNotif('success', 'Downloaded', 'DXF file saved');
+
+  } catch (e) {
+    showNotif('error', 'DXF Download Failed', e.message);
+    console.error('DXF download error:', e);
+  }
 }
 
 async function downloadGCode(designId, machine) {
