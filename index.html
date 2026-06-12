@@ -2067,6 +2067,7 @@ const APP = {
   currentPage: 'dashboard',
   dwgScale: 1,
   dwgOffX: 0, dwgOffY: 0,
+  dxfContent: null,   // cached DXF text from last conversion — used for client-side download
   uploadedFile: null,
   currentDwg: 'bracket',
   approvedDwgs: new Set(['bracket', 'enclosure']),
@@ -2443,6 +2444,7 @@ function handleFileSelect(e) {
 async function processFile(file) {
   APP.uploadedFile = file;
   APP.currentDesignId = null;  // reset any stale ID
+  APP.dxfContent = null;       // reset cached DXF text
 
   const ext = file.name.split('.').pop().toLowerCase();
   document.getElementById('file-info-panel').style.display = 'block';
@@ -2658,6 +2660,7 @@ async function startConversion() {
 
     if (data?.design) {
       APP.currentDesign = data.design;
+      APP.dxfContent = data.dxfContent || null;   // cache full DXF text for client-side download
       const a = data.analysis || {};
       document.getElementById('dim-w').textContent     = a.width      ? a.width.toFixed(0)  + 'mm' : '—';
       document.getElementById('dim-h').textContent     = a.height     ? a.height.toFixed(0) + 'mm' : '—';
@@ -3617,36 +3620,52 @@ function populateGCodeButtons(designId) {
 }
 
 async function downloadDXF() {
-  if (!APP.currentDesignId || !api.token) {
-    showNotif('error', 'Not Ready', 'Run conversion first');
-    return;
+  if (!APP.currentDesignId || !api.token) { showNotif('error','Not Ready','Run conversion first'); return; }
+
+  const filename = (APP.currentDesign?.dwg?.filename || 'part.dxf').replace(/\.dwg$/i, '.dxf');
+
+  // ── Primary: client-side download from cached DXF text (no extra round-trip,
+  //    no Render ephemeral-disk issues, works immediately after conversion).
+  if (APP.dxfContent) {
+    try {
+      const blob   = new Blob([APP.dxfContent], { type: 'application/dxf' });
+      const objUrl = URL.createObjectURL(blob);
+      const link   = document.createElement('a');
+      link.href     = objUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(objUrl);
+      showNotif('success', 'DXF Downloaded', filename);
+      return;
+    } catch (e) {
+      console.warn('[downloadDXF] Client-side blob download failed, trying server route:', e);
+    }
   }
 
-  const url = `${API_BASE}/api/designs/${APP.currentDesignId}/dxf`;
-
+  // ── Fallback: fetch from server /api/designs/:id/dxf (requires file on disk)
   try {
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${api.token}` }
+    showNotif('info', 'Downloading…', 'Fetching DXF from server');
+    const res = await fetch(`${API_BASE}/api/designs/${APP.currentDesignId}/dxf`, {
+      headers: { Authorization: `Bearer ${api.token}` },
     });
-
-    if (!res.ok) throw new Error(`Download failed: ${res.status} ${res.statusText}`);
-
-    const blob = await res.blob();
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || `HTTP ${res.status}`);
+    }
+    const blob   = await res.blob();
     const objUrl = URL.createObjectURL(blob);
-
-    const link = document.createElement('a');
-    link.href = objUrl;
-    link.download = APP.currentDesign?.dwg?.filename || 'part.dxf';
-    document.body.appendChild(link); // Required in some browsers
+    const link   = document.createElement('a');
+    link.href     = objUrl;
+    link.download = filename;
+    document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link); // Cleanup
-
+    document.body.removeChild(link);
     URL.revokeObjectURL(objUrl);
-    showNotif('success', 'Downloaded', 'DXF file saved');
-
+    showNotif('success', 'DXF Downloaded', filename);
   } catch (e) {
     showNotif('error', 'DXF Download Failed', e.message);
-    console.error('DXF download error:', e);
   }
 }
 
