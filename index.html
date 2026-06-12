@@ -455,14 +455,14 @@
 
   /* DWG VIEWER */
   .dwg-viewer {
-    background: #fff;
+    background: #0a0c0f;
     border-radius: var(--r-lg);
     overflow: hidden;
     position: relative;
     min-height: 480px;
     display: flex; align-items: center; justify-content: center;
   }
-  .dwg-canvas { width: 100%; height: 480px; }
+  .dwg-canvas { width: 100%; height: 480px; background: #0a0c0f; }
   .dwg-toolbar {
     position: absolute; top: 12px; left: 12px;
     display: flex; flex-direction: column; gap: 4px;
@@ -2179,7 +2179,10 @@ function showPage(page) {
   const nav = document.getElementById('nav-' + page);
   if (nav) nav.classList.add('active');
   APP.currentPage = page;
-  if (page === 'viewer') setTimeout(() => { initDwgCanvas(); loadDwg(APP.currentDwg); }, 100);
+  // FIX BUG 5: only call initDwgCanvas (which calls drawDWG internally).
+  // Removed the separate loadDwg() call — it was redundant and its old
+  // innerHTML= wiped any overlay already injected into #dwg-main-viewer.
+  if (page === 'viewer') setTimeout(() => initDwgCanvas(), 100);
 }
 
 // ================================================================
@@ -2775,43 +2778,74 @@ async function loadConvertedDesignIntoViewer(data) {
   const designId = data.design._id;
   APP.currentDesignId = designId;
 
-  // Populate APP.currentDwgData so the canvas renderer has real geometry
+  // FIX BUG 3: Use data.extractedData (top-level from server response), NOT
+  // data.analysis.extracted_data which never existed in process.py's output.
+  // Also store imgW/imgH for proper canvas centering offsets.
   if (data.analysis) {
     APP.currentDwgData = {
       analysis      : data.analysis,
-      extracted_data: data.analysis.extracted_data || null,
+      extracted_data: data.extractedData || null,   // from top-level response field
     };
   }
 
+  // FIX BUG 5 (part A): Ensure the viewer page canvas exists before we try to
+  // append an overlay to it.  We must navigate to the viewer page FIRST so the
+  // DOM element is visible and has real dimensions before we inject anything.
+  // We store the data and let viewConvertedDrawing() (called by the button) do
+  // the actual injection.  If the user is already on the viewer page, inject now.
+  APP._pendingPreviewData = data;   // always cache for viewConvertedDrawing()
+
+  if (APP.currentPage === 'viewer') {
+    _doInjectPreviewOverlay(data, designId);
+  }
+  // Otherwise the overlay is injected when the user clicks "View Drawing" →
+  // viewConvertedDrawing() which navigates and then calls _doInjectPreviewOverlay
+}
+
+/**
+ * _doInjectPreviewOverlay — the actual DOM work, called only when the
+ * viewer page is already active so #dwg-main-viewer is visible and has
+ * real pixel dimensions.
+ *
+ * FIX BUG 5: Previously this ran while the viewer page was display:none,
+ * so the overlay dimensions were 0×0 and loadDwg()'s innerHTML= wiped it.
+ * Now it only runs after showPage('viewer') has made the container visible.
+ */
+async function _doInjectPreviewOverlay(data, designId) {
   const viewer = document.getElementById('dwg-main-viewer');
   if (!viewer) return;
 
-  // Show a loading shimmer inside the viewer while we fetch
-  const canvas   = document.getElementById('dwg-canvas');
-  const toolbar  = viewer.querySelector('.dwg-toolbar');
-  const infoBar  = viewer.querySelector('.dwg-info');
-
-  // Insert a preview overlay above the canvas (removed once loaded)
-  let overlay = document.getElementById('dwg-preview-overlay');
-  if (!overlay) {
-    overlay = document.createElement('div');
-    overlay.id = 'dwg-preview-overlay';
-    overlay.style.cssText = [
-      'position:absolute;inset:0;z-index:4',
-      'display:flex;flex-direction:column;align-items:center;justify-content:center',
-      'background:var(--bg2)',
-      'border-radius:var(--r-lg)',
-      'overflow:hidden',
-    ].join(';');
-    viewer.style.position = 'relative';
-    viewer.appendChild(overlay);
+  // FIX BUG 5 (part B): ensure canvas exists without using innerHTML= which
+  // would nuke any overlay already present.  Check first; append only if absent.
+  if (!document.getElementById('dwg-canvas')) {
+    const cv = document.createElement('canvas');
+    cv.id        = 'dwg-canvas';
+    cv.className = 'dwg-canvas';
+    viewer.insertBefore(cv, viewer.firstChild);
   }
+  initDwgCanvas();
 
-  // Loading state
+  // Remove any stale overlay from a previous conversion
+  const stale = document.getElementById('dwg-preview-overlay');
+  if (stale) stale.remove();
+
+  // Create the overlay on top of the canvas
+  const overlay = document.createElement('div');
+  overlay.id = 'dwg-preview-overlay';
+  overlay.style.cssText = [
+    'position:absolute;inset:0;z-index:4',
+    'display:flex;flex-direction:column;align-items:center;justify-content:center',
+    'background:#0a0c0f',
+    'border-radius:var(--r-lg)',
+    'overflow:hidden',
+  ].join(';');
+  viewer.appendChild(overlay);
+
+  // Loading spinner
   overlay.innerHTML = `
     <div style="display:flex;flex-direction:column;align-items:center;gap:14px;color:var(--text-dim)">
       <div class="spinner" style="width:32px;height:32px;border-width:3px;border-color:var(--accent)"></div>
-      <div style="font-size:13px;font-weight:500">Loading preview…</div>
+      <div style="font-size:13px;font-weight:500">Loading edge preview…</div>
     </div>`;
 
   try {
@@ -2819,102 +2853,104 @@ async function loadConvertedDesignIntoViewer(data) {
       headers: { Authorization: `Bearer ${api.token}` },
     });
 
-    if (!resp.ok) throw new Error(`Preview fetch failed: ${resp.status}`);
+    if (!resp.ok) {
+      const errJson = await resp.json().catch(() => ({}));
+      throw new Error(errJson.error || `HTTP ${resp.status}`);
+    }
     const pdata = await resp.json();
 
-    if (pdata.dataUri) {
-      // ── SVG / PNG preview ──────────────────────────────────────
-      const isSvg = pdata.ext === 'svg';
+    if (!pdata.dataUri) throw new Error('No preview data returned');
 
-      if (isSvg) {
-        // Decode and inject raw SVG so it scales perfectly
-        const svgText = atob(pdata.dataUri.split(',')[1]);
-        overlay.innerHTML = '';
-        const wrapper = document.createElement('div');
-        wrapper.style.cssText = 'width:100%;height:100%;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px';
-        wrapper.innerHTML = svgText;
+    overlay.innerHTML = '';
 
-        // Make injected SVG responsive
-        const svgEl = wrapper.querySelector('svg');
-        if (svgEl) {
-          svgEl.style.maxWidth  = '100%';
-          svgEl.style.maxHeight = '460px';
-          svgEl.style.width     = '100%';
-          svgEl.removeAttribute('width');
-          svgEl.removeAttribute('height');
-          if (!svgEl.getAttribute('viewBox')) {
-            const w = pdata.analysis?.width  || 300;
-            const h = pdata.analysis?.height || 200;
-            svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
-          }
+    if (pdata.ext === 'svg') {
+      // Decode and inject raw SVG markup for perfect scaling
+      const svgText = atob(pdata.dataUri.split(',')[1]);
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'width:100%;height:100%;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px';
+      wrapper.innerHTML = svgText;
+      const svgEl = wrapper.querySelector('svg');
+      if (svgEl) {
+        svgEl.style.maxWidth  = '100%';
+        svgEl.style.maxHeight = '460px';
+        svgEl.style.width     = '100%';
+        svgEl.removeAttribute('width');
+        svgEl.removeAttribute('height');
+        if (!svgEl.getAttribute('viewBox')) {
+          const w = pdata.analysis?.width  || 300;
+          const h = pdata.analysis?.height || 200;
+          svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
         }
-        overlay.appendChild(wrapper);
-      } else {
-        // PNG / JPEG — show as <img>
-        overlay.innerHTML = '';
-        const img = document.createElement('img');
-        img.src = pdata.dataUri;
-        img.alt = pdata.partName || 'Design preview';
-        img.style.cssText = 'max-width:100%;max-height:460px;object-fit:contain;border-radius:var(--r)';
-        overlay.appendChild(img);
       }
-
-      // Update info bar with real values
-      const a = pdata.analysis || {};
-      const iw = document.getElementById('info-w');
-      const ih = document.getElementById('info-h');
-      if (iw) iw.textContent = a.width  ? Math.round(a.width)  : '—';
-      if (ih) ih.textContent = a.height ? Math.round(a.height) : '—';
-
-      // Add a thin "dismiss / switch to canvas" strip at the bottom of the overlay
-      const dismiss = document.createElement('div');
-      dismiss.style.cssText = [
-        'position:absolute;bottom:0;left:0;right:0',
-        'padding:8px 16px',
-        'background:linear-gradient(to top,rgba(10,12,15,0.92),transparent)',
-        'display:flex;align-items:center;justify-content:space-between',
-        'font-size:11px;color:var(--text-dim)',
-      ].join(';');
-      dismiss.innerHTML = `
-        <span><i class="fas fa-check-circle" style="color:var(--success);margin-right:6px"></i>
-          ${pdata.filename || 'preview'} — ready for review</span>
-        <button onclick="document.getElementById('dwg-preview-overlay').remove();drawDWG();"
-          style="background:var(--bg3);border:1px solid var(--border-med);color:var(--text-dim);
-                 border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">
-          <i class="fas fa-drafting-compass"></i> Canvas view
-        </button>`;
-      overlay.appendChild(dismiss);
-
-      showNotif('success', 'Preview Ready', `${pdata.filename} loaded in viewer`);
-
+      overlay.appendChild(wrapper);
     } else {
-      throw new Error('No preview data returned');
+      // PNG / JPEG — <img> with data-URI directly, no CORS needed
+      const img = document.createElement('img');
+      img.src = pdata.dataUri;
+      img.alt = pdata.partName || 'Canny edge preview';
+      img.style.cssText = 'max-width:100%;max-height:460px;object-fit:contain';
+      overlay.appendChild(img);
     }
+
+    // Update info bar dimensions from real analysis values
+    const a = pdata.analysis || {};
+    const iw = document.getElementById('info-w');
+    const ih = document.getElementById('info-h');
+    if (iw) iw.textContent = a.width  ? Math.round(a.width)  : '—';
+    if (ih) ih.textContent = a.height ? Math.round(a.height) : '—';
+
+    // Bottom strip: filename label + "Canvas view" dismiss button
+    const dismiss = document.createElement('div');
+    dismiss.style.cssText = [
+      'position:absolute;bottom:0;left:0;right:0',
+      'padding:8px 16px',
+      'background:linear-gradient(to top,rgba(10,12,15,0.95),transparent)',
+      'display:flex;align-items:center;justify-content:space-between',
+      'font-size:11px;color:var(--text-dim)',
+    ].join(';');
+    dismiss.innerHTML = `
+      <span>
+        <i class="fas fa-check-circle" style="color:var(--success);margin-right:6px"></i>
+        ${pdata.filename || 'preview.png'} — Canny edge result
+      </span>
+      <button onclick="document.getElementById('dwg-preview-overlay').remove();drawDWG();"
+        style="background:var(--bg3);border:1px solid var(--border-med);color:var(--text-dim);
+               border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px">
+        <i class="fas fa-drafting-compass"></i> Canvas view
+      </button>`;
+    overlay.appendChild(dismiss);
+
+    showNotif('success', 'Edge Preview Loaded', `${pdata.filename} displayed in viewer`);
+
   } catch (err) {
-    // Graceful fallback — hide overlay, let canvas draw the extracted geometry
-    console.warn('[SheetForge] Preview inline fetch failed:', err.message);
+    console.warn('[SheetForge] _doInjectPreviewOverlay failed:', err.message);
+    // Fall back to canvas — canvas now has real extracted_data (if any)
     overlay.innerHTML = `
       <div style="font-size:12px;color:var(--text-dim);padding:20px;text-align:center">
         <i class="fas fa-drafting-compass" style="font-size:28px;margin-bottom:10px;display:block;color:var(--accent)"></i>
-        Preview unavailable — canvas view active
+        <div>Preview unavailable — canvas view active</div>
+        <div style="font-size:10px;margin-top:6px;color:var(--text-muted)">${err.message}</div>
       </div>`;
-    setTimeout(() => { overlay.remove(); drawDWG(); }, 1800);
+    setTimeout(() => { overlay.remove(); drawDWG(); }, 2000);
   }
 }
 
 /**
- * Navigate to the CAD Viewer page and load the converted design.
- * Called by the "View Drawing" button once conversion is complete.
+ * Navigate to the CAD Viewer page and inject the preview overlay.
+ * FIX BUG 5: We MUST show the page first (making the viewer DOM visible
+ * with real pixel dimensions) THEN inject the overlay.  The previous code
+ * injected while the page was hidden, so dimensions were 0 and loadDwg()
+ * destroyed the overlay with innerHTML=.
  */
 function viewConvertedDrawing() {
   showPage('viewer');
-  // The overlay was already created by loadConvertedDesignIntoViewer;
-  // re-init the canvas behind it in case the viewer page was not yet rendered.
-  setTimeout(() => {
-    initDwgCanvas();
-    // If we have real geometry, drawDWG will use it; otherwise fallback shapes
-    drawDWG();
-  }, 100);
+  // showPage already calls initDwgCanvas + loadDwg via its setTimeout.
+  // We add a slightly longer delay so that fires BEFORE our overlay injection,
+  // meaning canvas is properly sized and loadDwg() has already run.
+  const pending = APP._pendingPreviewData;
+  if (pending?.design?._id) {
+    setTimeout(() => _doInjectPreviewOverlay(pending, pending.design._id), 200);
+  }
 }
 
 function approveDWG() {
@@ -2923,10 +2959,6 @@ function approveDWG() {
   document.getElementById('approve-btn').className = 'btn btn-success flex-1';
   setStep(5);
   showNotif('success', 'Design Approved', 'Ready to save to Cloudinary');
-  // Ensure preview is loaded in viewer — loadConvertedDesignIntoViewer is idempotent
-  if (APP.currentDesign && !document.getElementById('dwg-preview-overlay')) {
-    loadConvertedDesignIntoViewer({ design: APP.currentDesign, analysis: APP.currentDesign.aiAnalysis });
-  }
   setTimeout(() => openCloudSaveModal(), 1500);
 }
 
@@ -3005,10 +3037,14 @@ function initDwgCanvas() {
   const canvas = document.getElementById('dwg-canvas');
   if (!canvas) return;
   const container = canvas.parentElement;
-  canvas.width = container.offsetWidth || 800;
+  canvas.width  = container.offsetWidth || 800;
   canvas.height = 480;
   APP.dwgScale = 1; APP.dwgOffX = 0; APP.dwgOffY = 0;
-  loadDwg(APP.currentDwg || 'bracket');
+  // FIX BUG 5: Do NOT call loadDwg() here — loadDwg calls initDwgCanvas,
+  // creating an infinite loop, and its old innerHTML= would destroy overlays.
+  // We just size the canvas and attach interaction handlers; drawDWG() is
+  // called separately after any overlay is in place.
+  drawDWG();
 
   // Mouse interactions
   let dragging = false, lastX, lastY;
@@ -3030,10 +3066,15 @@ function initDwgCanvas() {
 function loadDwg(name) {
   APP.currentDwg = name;
   const container = document.getElementById('dwg-main-viewer');
-  
-  // Guard clause to ensure we inject the canvas securely if not present without layout breakdown
+
+  // FIX BUG 5 (part B): NEVER use innerHTML= here — it destroys the preview
+  // overlay that _doInjectPreviewOverlay just built.  Only append the canvas
+  // element if it genuinely doesn't exist yet.
   if (container && !document.getElementById('dwg-canvas')) {
-    container.innerHTML = '<canvas id="dwg-canvas" class="dwg-canvas"></canvas>';
+    const cv = document.createElement('canvas');
+    cv.id        = 'dwg-canvas';
+    cv.className = 'dwg-canvas';
+    container.insertBefore(cv, container.firstChild);
   }
   
   initDwgCanvas();
@@ -3058,15 +3099,21 @@ function drawDWG() {
   const canvas = document.getElementById('dwg-canvas');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
+
+  // FIX BUG 4: explicitly fill dark background — canvas default is transparent
+  // which would show white .dwg-viewer background through it
+  ctx.fillStyle = '#0a0c0f';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  
+
   ctx.save();
   // Center drawing model view matrix context space
   ctx.translate(canvas.width / 2 + APP.dwgOffX, canvas.height / 2 + APP.dwgOffY);
   ctx.scale(APP.dwgScale, APP.dwgScale);
   
   // Draw systemic construction grid background line layers
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.04)';
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
   ctx.lineWidth = 0.5;
   const gridSize = 40;
   for (let x = -2000; x <= 2000; x += gridSize) {
@@ -3077,7 +3124,7 @@ function drawDWG() {
   }
 
   // Draw coordinate axis crosshairs
-  ctx.strokeStyle = 'rgba(61, 126, 255, 0.15)';
+  ctx.strokeStyle = 'rgba(61, 126, 255, 0.30)';
   ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(-2000, 0); ctx.lineTo(2000, 0); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(0, -2000); ctx.lineTo(0, 2000); ctx.stroke();
@@ -3164,8 +3211,8 @@ function drawDWG() {
     const shapes = getDwgShapes(APP.currentDwg);
     shapes.forEach(shape => {
       ctx.lineWidth = shape.lw || 1;
-      ctx.strokeStyle = shape.color || '#1a2a3a';
-      
+      ctx.strokeStyle = shape.color || '#c8d8e8';
+
       if (shape.type === 'rect') {
         ctx.strokeRect(shape.x, shape.y, shape.w, shape.h);
       } else if (shape.type === 'circle') {
@@ -3173,7 +3220,7 @@ function drawDWG() {
         ctx.arc(shape.cx, shape.cy, shape.r, 0, 2 * Math.PI);
         ctx.stroke();
       } else if (shape.type === 'text') {
-        ctx.fillStyle = shape.color || '#1a2a3a';
+        ctx.fillStyle = shape.color || '#c8d8e8';
         ctx.font = `${shape.size || 8}px DM Mono, monospace`;
         ctx.fillText(shape.text, shape.x, shape.y);
       }
