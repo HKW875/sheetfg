@@ -1362,7 +1362,7 @@
                 </div>
                 <!-- DXF Download -->
                 <button class="btn w-full mb-8" id="btn-download-dxf" onclick="downloadDXF()" style="display:none">
-                  <i class="fas fa-download"></i> Download DXF (AutoCAD R2000)
+                  <i class="fas fa-download"></i> Download DXF (Merged &amp; Closed Contours)
                 </button>
                 <!-- G-Code Downloads -->
                 <div id="gcode-panel" style="display:none">
@@ -2067,7 +2067,6 @@ const APP = {
   currentPage: 'dashboard',
   dwgScale: 1,
   dwgOffX: 0, dwgOffY: 0,
-  dxfContent: null,   // cached DXF text from last conversion — used for client-side download
   uploadedFile: null,
   currentDwg: 'bracket',
   approvedDwgs: new Set(['bracket', 'enclosure']),
@@ -2444,7 +2443,6 @@ function handleFileSelect(e) {
 async function processFile(file) {
   APP.uploadedFile = file;
   APP.currentDesignId = null;  // reset any stale ID
-  APP.dxfContent = null;       // reset cached DXF text
 
   const ext = file.name.split('.').pop().toLowerCase();
   document.getElementById('file-info-panel').style.display = 'block';
@@ -2660,7 +2658,6 @@ async function startConversion() {
 
     if (data?.design) {
       APP.currentDesign = data.design;
-      APP.dxfContent = data.dxfContent || null;   // cache full DXF text for client-side download
       const a = data.analysis || {};
       document.getElementById('dim-w').textContent     = a.width      ? a.width.toFixed(0)  + 'mm' : '—';
       document.getElementById('dim-h').textContent     = a.height     ? a.height.toFixed(0) + 'mm' : '—';
@@ -2681,13 +2678,18 @@ async function startConversion() {
       }
       document.getElementById('analysis-spinner').style.display = 'none';
       document.getElementById('btn-download-dxf').style.display = 'block';
-      const gcBtn = document.getElementById('btn-download-gcode');
-      if (gcBtn) gcBtn.style.display = 'block';
+      // Show gcode panel with buttons for each generated machine file
+      const availableMachines = data.gcodeFiles ? Object.keys(data.gcodeFiles) : [];
+      populateGCodeButtons(APP.currentDesignId, availableMachines);
       document.getElementById('dwg-result-panel').style.display = 'block';
       document.getElementById('conv-status-badge').className = 'badge badge-ready';
       document.getElementById('conv-status-badge').textContent = 'Complete';
       setStep(4);
-      showNotif('success', 'DXF + G-Code Ready', `${a.edges || 0} entities extracted.`);
+      const mergedInfo = a.mergedContours
+        ? ` | ${a.mergedContours} merged (${a.closedContours || 0} closed)`
+        : '';
+      showNotif('success', 'DXF + G-Code Ready',
+        `${a.edges || 0} raw entities → ${a.mergedContours || 0} contours${mergedInfo}`);
       document.getElementById('convert-btn').disabled = false;
       document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Re-convert';
 
@@ -3609,64 +3611,42 @@ const MACHINE_LABELS = {
   oxyfuel:  { icon: 'fa-fire-alt',    label: 'Oxyfuel' },
 };
 
-function populateGCodeButtons(designId) {
+function populateGCodeButtons(designId, availableMachines) {
   const grid = document.getElementById('gcode-btn-grid');
   if (!grid) return;
-  grid.innerHTML = Object.entries(MACHINE_LABELS).map(([type, { icon, label }]) => `
-    <button class="btn" style="font-size:11px;padding:6px 8px" onclick="downloadGCode('${designId}','${type}')">
-      <i class="fas ${icon}" style="margin-right:5px"></i>${label}
-    </button>`).join('');
-  document.getElementById('gcode-panel').style.display = 'block';
+  // availableMachines: array of machine keys returned by server, or null = show all
+  const machines = availableMachines && availableMachines.length
+    ? availableMachines
+    : Object.keys(MACHINE_LABELS);
+  grid.innerHTML = machines
+    .filter(type => MACHINE_LABELS[type])
+    .map(type => {
+      const { icon, label } = MACHINE_LABELS[type];
+      return `<button class="btn" style="font-size:11px;padding:6px 8px" onclick="downloadGCode('${designId}','${type}')">
+        <i class="fas ${icon}" style="margin-right:5px"></i>${label}
+      </button>`;
+    }).join('');
+  document.getElementById('gcode-panel').style.display = machines.length ? 'block' : 'none';
 }
 
 async function downloadDXF() {
   if (!APP.currentDesignId || !api.token) { showNotif('error','Not Ready','Run conversion first'); return; }
-
-  const filename = (APP.currentDesign?.dwg?.filename || 'part.dxf').replace(/\.dwg$/i, '.dxf');
-
-  // ── Primary: client-side download from cached DXF text (no extra round-trip,
-  //    no Render ephemeral-disk issues, works immediately after conversion).
-  if (APP.dxfContent) {
-    try {
-      const blob   = new Blob([APP.dxfContent], { type: 'application/dxf' });
-      const objUrl = URL.createObjectURL(blob);
-      const link   = document.createElement('a');
-      link.href     = objUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(objUrl);
-      showNotif('success', 'DXF Downloaded', filename);
-      return;
-    } catch (e) {
-      console.warn('[downloadDXF] Client-side blob download failed, trying server route:', e);
-    }
-  }
-
-  // ── Fallback: fetch from server /api/designs/:id/dxf (requires file on disk)
+  const url = `${API_BASE}/api/designs/${APP.currentDesignId}/dxf`;
+  const a = document.createElement('a');
+  a.href = url;
+  a.setAttribute('Authorization', `Bearer ${api.token}`);
+  // Use fetch to download with auth header
   try {
-    showNotif('info', 'Downloading…', 'Fetching DXF from server');
-    const res = await fetch(`${API_BASE}/api/designs/${APP.currentDesignId}/dxf`, {
-      headers: { Authorization: `Bearer ${api.token}` },
-    });
-    if (!res.ok) {
-      const errData = await res.json().catch(() => ({}));
-      throw new Error(errData.error || `HTTP ${res.status}`);
-    }
-    const blob   = await res.blob();
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${api.token}` } });
+    if (!res.ok) throw new Error('Download failed');
+    const blob = await res.blob();
     const objUrl = URL.createObjectURL(blob);
-    const link   = document.createElement('a');
-    link.href     = objUrl;
-    link.download = filename;
-    document.body.appendChild(link);
+    const link = document.createElement('a');
+    link.href = objUrl;
+    link.download = (APP.currentDesign?.dwg?.filename || 'part.dxf');
     link.click();
-    document.body.removeChild(link);
     URL.revokeObjectURL(objUrl);
-    showNotif('success', 'DXF Downloaded', filename);
-  } catch (e) {
-    showNotif('error', 'DXF Download Failed', e.message);
-  }
+  } catch (e) { showNotif('error','DXF Download Failed', e.message); }
 }
 
 async function downloadGCode(designId, machine) {
