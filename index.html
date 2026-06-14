@@ -1308,17 +1308,6 @@
                   <label class="form-label">Special Notes</label>
                   <textarea class="form-textarea" id="design-notes" placeholder="Any special requirements, tolerances, surface finish, etc."></textarea>
                 </div>
-                <div class="form-row">
-                  <div class="form-group">
-                    <label class="form-label" title="Shapes smaller than this (in drawing units ≈ pixels) will be removed from the final DXF">Min Shape Size (px) <span style="color:var(--text-muted);font-weight:400">— filter tiny noise</span></label>
-                    <input class="form-input" type="number" id="min-shape-size" placeholder="e.g. 20  (0 = keep all)" min="0" step="1" value="0">
-                  </div>
-                </div>
-                <div class="form-group">
-                  <label class="form-label">AI Shape Filter <span style="color:var(--text-muted);font-weight:400">— describe shapes to remove (optional)</span></label>
-                  <textarea class="form-textarea" id="filter-description" rows="2" placeholder="e.g. &quot;remove all small circles smaller than 10px diameter&quot; or &quot;remove any shapes in the top-left corner&quot;" style="min-height:56px"></textarea>
-                  <div style="font-size:11px;color:var(--text-muted);margin-top:4px"><i class="fas fa-robot" style="margin-right:4px;color:var(--accent)"></i>Gemini AI reads your description and filters matching DXF shapes automatically</div>
-                </div>
                 <button class="btn btn-accent w-full" onclick="startConversion()" id="convert-btn">
                   <i class="fas fa-magic"></i> Convert to DWG with AI
                 </button>
@@ -1367,9 +1356,9 @@
                   <div class="dim-item"><div class="dim-item-label">Width</div><div class="dim-item-val" id="dim-w">—</div></div>
                   <div class="dim-item"><div class="dim-item-label">Height</div><div class="dim-item-val" id="dim-h">—</div></div>
                   <div class="dim-item"><div class="dim-item-label">Thickness</div><div class="dim-item-val" id="dim-t">—</div></div>
-                  <div class="dim-item"><div class="dim-item-label">Shapes</div><div class="dim-item-val" id="dim-shapes">—</div></div>
-                  <div class="dim-item"><div class="dim-item-label">Circles</div><div class="dim-item-val" id="dim-circles">—</div></div>
-                  <div class="dim-item"><div class="dim-item-label">Rects</div><div class="dim-item-val" id="dim-rects">—</div></div>
+                  <div class="dim-item"><div class="dim-item-label">Bend Lines</div><div class="dim-item-val" id="dim-b">—</div></div>
+                  <div class="dim-item"><div class="dim-item-label">Holes</div><div class="dim-item-val" id="dim-holes">—</div></div>
+                  <div class="dim-item"><div class="dim-item-label">Confidence</div><div class="dim-item-val" id="dim-conf">—</div></div>
                 </div>
                 <!-- DXF Download -->
                 <button class="btn w-full mb-8" id="btn-download-dxf" onclick="downloadDXF()" style="display:none">
@@ -2656,10 +2645,6 @@ async function startConversion() {
     const res = await fetch(`${API_BASE}/api/convert/${APP.currentDesignId}`, {
       method: 'POST',
       headers: { 'Content-Type':'application/json', Authorization:`Bearer ${api.token}` },
-      body: JSON.stringify({
-        minShapeSize    : parseFloat(document.getElementById('min-shape-size')?.value || 0),
-        filterDescription: (document.getElementById('filter-description')?.value || '').trim(),
-      }),
     });
     if (es) es.close();
 
@@ -2673,16 +2658,20 @@ async function startConversion() {
 
     if (data?.design) {
       APP.currentDesign = data.design;
+      // v9: cache the full DXF text returned by the conversion response so
+      // downloadDXF() can build a client-side blob without depending on the
+      // ephemeral filesystem.
+      APP.dxfContent = data.dxfContent || data.design.dwg?.dxfContent || '';
       const a = data.analysis || {};
-      document.getElementById('dim-w').textContent       = a.width      ? a.width.toFixed(0)  + 'mm' : '—';
-      document.getElementById('dim-h').textContent       = a.height     ? a.height.toFixed(0) + 'mm' : '—';
-      document.getElementById('dim-t').textContent       = a.thickness  ? a.thickness + 'mm'          : (thick || '—') + 'mm';
-      document.getElementById('dim-shapes').textContent  = a.refinedShapes  ?? '—';
-      document.getElementById('dim-circles').textContent = a.refinedCircles ?? '—';
-      document.getElementById('dim-rects').textContent   = a.refinedRects   ?? '—';
+      document.getElementById('dim-w').textContent     = a.width      ? a.width.toFixed(0)  + 'mm' : '—';
+      document.getElementById('dim-h').textContent     = a.height     ? a.height.toFixed(0) + 'mm' : '—';
+      document.getElementById('dim-t').textContent     = a.thickness  ? a.thickness + 'mm'          : (thick || '—') + 'mm';
+      document.getElementById('dim-b').textContent     = a.bendLines  ?? '—';
+      document.getElementById('dim-holes').textContent = a.holes      ?? '—';
+      document.getElementById('dim-conf').textContent  = a.confidence ? a.confidence + '%'           : '—';
       document.getElementById('dwg-filename').textContent = data.design.dwg?.filename || 'part.dxf';
       document.getElementById('dim-confidence').textContent =
-        `DXF R2018 (ezdxf) • ${a.profileType || 'Profile'} • ${a.confidence || 0}% confidence`;
+        `DXF R2018 (ezdxf) • Algebraic LS Shape Fitting • ${a.shapeSummary || (a.profileType || 'Profile')}`;
       if (data.steps?.length) {
         data.steps.forEach(s => {
           const d = document.createElement('div');
@@ -2700,11 +2689,11 @@ async function startConversion() {
       document.getElementById('conv-status-badge').className = 'badge badge-ready';
       document.getElementById('conv-status-badge').textContent = 'Complete';
       setStep(4);
-      const mergedInfo = a.refinedShapes != null
-        ? ` | ${a.refinedShapes} shapes (${a.refinedCircles||0} circles, ${a.refinedRects||0} rects)`
-        : (a.mergedContours ? ` | ${a.mergedContours} merged (${a.closedContours || 0} closed)` : '');
-      showNotif('success', 'DXF + Drawing Ready',
-        `${a.edges || 0} raw edges → ${a.refinedShapes || a.mergedContours || 0} refined shapes${mergedInfo}`);
+      const shapeInfo = (a.rectsDetected !== undefined || a.circlesDetected !== undefined)
+        ? ` | ${a.rectsDetected || 0} rect(s) + ${a.circlesDetected || 0} circle(s) — fitted & centered`
+        : '';
+      showNotif('success', 'DXF Ready — Algebraic LS Shapes',
+        `${a.contours || 0} raw contours → ${a.edges || 0} clean entities${shapeInfo}`);
       document.getElementById('convert-btn').disabled = false;
       document.getElementById('convert-btn').innerHTML = '<i class="fas fa-magic"></i> Re-convert';
 
@@ -2835,6 +2824,8 @@ async function _doInjectPreviewOverlay(data, designId) {
   const viewer = document.getElementById('dwg-main-viewer');
   if (!viewer) return;
 
+  // FIX BUG 5 (part B): ensure canvas exists without using innerHTML= which
+  // would nuke any overlay already present.  Check first; append only if absent.
   if (!document.getElementById('dwg-canvas')) {
     const cv = document.createElement('canvas');
     cv.id        = 'dwg-canvas';
@@ -2843,9 +2834,11 @@ async function _doInjectPreviewOverlay(data, designId) {
   }
   initDwgCanvas();
 
+  // Remove any stale overlay from a previous conversion
   const stale = document.getElementById('dwg-preview-overlay');
   if (stale) stale.remove();
 
+  // Create the overlay on top of the canvas
   const overlay = document.createElement('div');
   overlay.id = 'dwg-preview-overlay';
   overlay.style.cssText = [
@@ -2857,15 +2850,15 @@ async function _doInjectPreviewOverlay(data, designId) {
   ].join(';');
   viewer.appendChild(overlay);
 
+  // Loading spinner
   overlay.innerHTML = `
     <div style="display:flex;flex-direction:column;align-items:center;gap:14px;color:var(--text-dim)">
       <div class="spinner" style="width:32px;height:32px;border-width:3px;border-color:var(--accent)"></div>
-      <div style="font-size:13px;font-weight:500">Loading refined drawing…</div>
+      <div style="font-size:13px;font-weight:500">Loading edge preview…</div>
     </div>`;
 
   try {
-    // Prefer the refined-shape PNG; fall back to Canny edge PNG
-    const resp = await fetch(`${API_BASE}/api/designs/${designId}/drawing-png`, {
+    const resp = await fetch(`${API_BASE}/api/designs/${designId}/preview-inline`, {
       headers: { Authorization: `Bearer ${api.token}` },
     });
 
@@ -2874,27 +2867,48 @@ async function _doInjectPreviewOverlay(data, designId) {
       throw new Error(errJson.error || `HTTP ${resp.status}`);
     }
     const pdata = await resp.json();
-    if (!pdata.dataUri) throw new Error('No drawing data returned');
+
+    if (!pdata.dataUri) throw new Error('No preview data returned');
 
     overlay.innerHTML = '';
 
-    const img = document.createElement('img');
-    img.src      = pdata.dataUri;
-    img.alt      = pdata.partName || 'Refined drawing';
-    img.style.cssText = 'max-width:100%;max-height:460px;object-fit:contain';
-    overlay.appendChild(img);
+    if (pdata.ext === 'svg') {
+      // Decode and inject raw SVG markup for perfect scaling
+      const svgText = atob(pdata.dataUri.split(',')[1]);
+      const wrapper = document.createElement('div');
+      wrapper.style.cssText = 'width:100%;height:100%;overflow:auto;display:flex;align-items:center;justify-content:center;padding:16px';
+      wrapper.innerHTML = svgText;
+      const svgEl = wrapper.querySelector('svg');
+      if (svgEl) {
+        svgEl.style.maxWidth  = '100%';
+        svgEl.style.maxHeight = '460px';
+        svgEl.style.width     = '100%';
+        svgEl.removeAttribute('width');
+        svgEl.removeAttribute('height');
+        if (!svgEl.getAttribute('viewBox')) {
+          const w = pdata.analysis?.width  || 300;
+          const h = pdata.analysis?.height || 200;
+          svgEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
+        }
+      }
+      overlay.appendChild(wrapper);
+    } else {
+      // PNG / JPEG — <img> with data-URI directly, no CORS needed
+      const img = document.createElement('img');
+      img.src = pdata.dataUri;
+      img.alt = pdata.partName || 'Canny edge preview';
+      img.style.cssText = 'max-width:100%;max-height:460px;object-fit:contain';
+      overlay.appendChild(img);
+    }
 
-    const a  = pdata.analysis || {};
+    // Update info bar dimensions from real analysis values
+    const a = pdata.analysis || {};
     const iw = document.getElementById('info-w');
     const ih = document.getElementById('info-h');
     if (iw) iw.textContent = a.width  ? Math.round(a.width)  : '—';
     if (ih) ih.textContent = a.height ? Math.round(a.height) : '—';
 
-    // Shape summary strip
-    const shapeInfo = pdata.refinedShapes
-      ? `${pdata.refinedShapes} shapes — ${pdata.refinedCircles||0} circles, ${pdata.refinedRects||0} rects`
-      : (pdata.filename || 'drawing.png');
-
+    // Bottom strip: filename label + "Canvas view" dismiss button
     const dismiss = document.createElement('div');
     dismiss.style.cssText = [
       'position:absolute;bottom:0;left:0;right:0',
@@ -2906,7 +2920,7 @@ async function _doInjectPreviewOverlay(data, designId) {
     dismiss.innerHTML = `
       <span>
         <i class="fas fa-check-circle" style="color:var(--success);margin-right:6px"></i>
-        ${shapeInfo}
+        ${pdata.filename || 'preview.png'} — Canny edge result
       </span>
       <button onclick="document.getElementById('dwg-preview-overlay').remove();drawDWG();"
         style="background:var(--bg3);border:1px solid var(--border-med);color:var(--text-dim);
@@ -2915,10 +2929,11 @@ async function _doInjectPreviewOverlay(data, designId) {
       </button>`;
     overlay.appendChild(dismiss);
 
-    showNotif('success', 'Drawing Loaded', shapeInfo);
+    showNotif('success', 'Edge Preview Loaded', `${pdata.filename} displayed in viewer`);
 
   } catch (err) {
     console.warn('[SheetForge] _doInjectPreviewOverlay failed:', err.message);
+    // Fall back to canvas — canvas now has real extracted_data (if any)
     overlay.innerHTML = `
       <div style="font-size:12px;color:var(--text-dim);padding:20px;text-align:center">
         <i class="fas fa-drafting-compass" style="font-size:28px;margin-bottom:10px;display:block;color:var(--accent)"></i>
@@ -2931,6 +2946,10 @@ async function _doInjectPreviewOverlay(data, designId) {
 
 /**
  * Navigate to the CAD Viewer page and inject the preview overlay.
+ * FIX BUG 5: We MUST show the page first (making the viewer DOM visible
+ * with real pixel dimensions) THEN inject the overlay.  The previous code
+ * injected while the page was hidden, so dimensions were 0 and loadDwg()
+ * destroyed the overlay with innerHTML=.
  */
 function viewConvertedDrawing() {
   showPage('viewer');
@@ -3599,10 +3618,14 @@ const MACHINE_LABELS = {
 function populateGCodeButtons(designId, availableMachines) {
   const grid = document.getElementById('gcode-btn-grid');
   if (!grid) return;
-  // availableMachines: array of machine keys returned by server, or null = show all
-  const machines = availableMachines && availableMachines.length
-    ? availableMachines
-    : Object.keys(MACHINE_LABELS);
+  // availableMachines: array of machine keys returned by server.
+  // v9 (Algebraic LS pipeline) does not generate G-Code, so an empty array
+  // means "no machines available" — hide the panel rather than guessing.
+  // A null/undefined value falls back to showing all known machine types
+  // (legacy demo path only).
+  const machines = availableMachines === null || availableMachines === undefined
+    ? Object.keys(MACHINE_LABELS)
+    : availableMachines;
   grid.innerHTML = machines
     .filter(type => MACHINE_LABELS[type])
     .map(type => {
@@ -3616,21 +3639,43 @@ function populateGCodeButtons(designId, availableMachines) {
 
 async function downloadDXF() {
   if (!APP.currentDesignId || !api.token) { showNotif('error','Not Ready','Run conversion first'); return; }
-  const url = `${API_BASE}/api/designs/${APP.currentDesignId}/dxf`;
-  const a = document.createElement('a');
-  a.href = url;
-  a.setAttribute('Authorization', `Bearer ${api.token}`);
-  // Use fetch to download with auth header
+  const filename = (APP.currentDesign?.dwg?.filename) || 'part.dxf';
+
   try {
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${api.token}` } });
-    if (!res.ok) throw new Error('Download failed');
-    const blob = await res.blob();
+    // v9: prefer the DXF text cached client-side from the conversion response
+    // (APP.dxfContent) — avoids any dependency on Render's ephemeral disk.
+    let dxfText = APP.dxfContent || '';
+
+    if (!dxfText) {
+      // Fall back to the JSON content endpoint (reads cached Mongo field)
+      const contentRes = await fetch(`${API_BASE}/api/designs/${APP.currentDesignId}/dxf-content`, {
+        headers: { Authorization: `Bearer ${api.token}` },
+      });
+      if (contentRes.ok) {
+        const cdata = await contentRes.json();
+        dxfText = cdata.dxfContent || '';
+      }
+    }
+
+    let blob;
+    if (dxfText) {
+      blob = new Blob([dxfText], { type: 'application/dxf' });
+    } else {
+      // Last resort: stream the file directly from disk via the /dxf route
+      const res = await fetch(`${API_BASE}/api/designs/${APP.currentDesignId}/dxf`, {
+        headers: { Authorization: `Bearer ${api.token}` },
+      });
+      if (!res.ok) throw new Error('Download failed');
+      blob = await res.blob();
+    }
+
     const objUrl = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = objUrl;
-    link.download = (APP.currentDesign?.dwg?.filename || 'part.dxf');
+    link.download = filename;
     link.click();
     URL.revokeObjectURL(objUrl);
+    showNotif('success', 'DXF Downloaded', `${filename} — true closed shapes (circles + rectangles)`);
   } catch (e) { showNotif('error','DXF Download Failed', e.message); }
 }
 
