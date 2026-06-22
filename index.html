@@ -1410,14 +1410,11 @@
                     <!-- injected by JS -->
                   </div>
                 </div>
-                <div class="flex gap-8" style="margin-bottom:8px">
+                <div class="flex gap-8">
                   <button class="btn flex-1" onclick="viewConvertedDrawing()"><i class="fas fa-eye"></i> View Drawing</button>
                   <button class="btn flex-1" onclick="openDxfEditor()" style="color:var(--accent2)"><i class="fas fa-pencil-ruler"></i> Edit DXF</button>
                   <button class="btn btn-success flex-1" onclick="approveDWG()" id="approve-btn"><i class="fas fa-check"></i> Approve</button>
                 </div>
-                <button class="btn w-full" onclick="doConvert()" style="color:var(--text-dim);border-color:var(--border)">
-                  <i class="fas fa-sync-alt"></i> Refresh / Re-process Image
-                </button>
               </div>
             </div>
           </div>
@@ -4099,8 +4096,6 @@ const DXFED = {
   // Interaction
   isPanning: false, panStart: null,
   isDragging: false, dragStart: null, dragSnap: null,
-  // v12 — hover & rubber-band
-  _hoverId: null, _rubberBand: null, _snapCandidate: null,
   // Options
   showGrid: true, snapToGrid: true, gridSize: 10,
   // Measure
@@ -4284,64 +4279,7 @@ function canvasToDxf(cx, cy) {
     y: (DXFED.canvas.height / 2 + DXFED.offY - cy) / DXFED.scale,
   };
 }
-// ── ENTITY SNAP — endpoints, centers, corners, intersections ──────
-// v12 FIX: snap only to entity geometry, not to an arbitrary grid.
-// Grid snap is kept as a secondary fallback when snapToGrid is ON and
-// no entity snap point is close enough.
-const ENTITY_SNAP_RADIUS_PX = 14; // canvas-pixel tolerance for entity snap
-
-function getEntitySnapPoints() {
-  const pts = [];
-  for (const e of DXFED.entities) {
-    if (!e.visible) continue;
-    if (e.type === 'LINE') {
-      pts.push({ x: e.x1, y: e.y1, kind: 'endpoint' });
-      pts.push({ x: e.x2, y: e.y2, kind: 'endpoint' });
-      pts.push({ x: (e.x1+e.x2)/2, y: (e.y1+e.y2)/2, kind: 'midpoint' });
-    } else if (e.type === 'CIRCLE') {
-      pts.push({ x: e.cx, y: e.cy, kind: 'center' });
-      pts.push({ x: e.cx + e.r, y: e.cy, kind: 'quadrant' });
-      pts.push({ x: e.cx - e.r, y: e.cy, kind: 'quadrant' });
-      pts.push({ x: e.cx, y: e.cy + e.r, kind: 'quadrant' });
-      pts.push({ x: e.cx, y: e.cy - e.r, kind: 'quadrant' });
-    } else if (e.type === 'ARC') {
-      pts.push({ x: e.cx, y: e.cy, kind: 'center' });
-      const sa = e.startAngle * Math.PI / 180;
-      const ea = e.endAngle   * Math.PI / 180;
-      pts.push({ x: e.cx + e.r * Math.cos(sa), y: e.cy + e.r * Math.sin(sa), kind: 'endpoint' });
-      pts.push({ x: e.cx + e.r * Math.cos(ea), y: e.cy + e.r * Math.sin(ea), kind: 'endpoint' });
-    } else if (e.type === 'LWPOLYLINE' && e.vertices) {
-      for (const v of e.vertices) {
-        pts.push({ x: v[0], y: v[1], kind: 'endpoint' });
-      }
-      if (e.vertices.length > 1) {
-        const v0 = e.vertices[0], vl = e.vertices[e.vertices.length - 1];
-        pts.push({ x: (v0[0]+vl[0])/2, y: (v0[1]+vl[1])/2, kind: 'midpoint' });
-      }
-    }
-  }
-  return pts;
-}
-
-// Stored snap candidate for visual indicator on render
-DXFED._snapCandidate = null;
-
 function snapPt(x, y) {
-  // 1. Entity snap — takes priority over grid
-  const snapPts = getEntitySnapPoints();
-  let best = null, bestDPx = ENTITY_SNAP_RADIUS_PX;
-  for (const sp of snapPts) {
-    const canv = dxfToCanvas(sp.x, sp.y);
-    const rawCanv = dxfToCanvas(x, y);
-    const dpx = Math.hypot(canv.cx - rawCanv.cx, canv.cy - rawCanv.cy);
-    if (dpx < bestDPx) { bestDPx = dpx; best = sp; }
-  }
-  if (best) {
-    DXFED._snapCandidate = best;
-    return { x: best.x, y: best.y };
-  }
-  DXFED._snapCandidate = null;
-  // 2. Grid snap (secondary)
   if (!DXFED.snapToGrid) return { x, y };
   const g = DXFED.gridSize;
   return { x: Math.round(x / g) * g, y: Math.round(y / g) * g };
@@ -4363,23 +4301,10 @@ function dxfEdRenderAll() {
   ctx.beginPath(); ctx.moveTo(0, org.cy); ctx.lineTo(canvas.width, org.cy); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(org.cx, 0); ctx.lineTo(org.cx, canvas.height); ctx.stroke();
 
-  // Draw entities (with hover highlight)
+  // Draw entities
   for (const e of DXFED.entities) {
     if (!e.visible || !DXFED.layerVis[e.layer]) continue;
     drawEntity(e);
-  }
-
-  // Draw rubber-band selection rect
-  if (DXFED._rubberBand) {
-    const rb = DXFED._rubberBand;
-    ctx.strokeStyle = 'rgba(61,126,255,0.8)';
-    ctx.fillStyle   = 'rgba(61,126,255,0.08)';
-    ctx.lineWidth = 1;
-    ctx.setLineDash([5, 3]);
-    ctx.beginPath();
-    ctx.rect(rb.x, rb.y, rb.w, rb.h);
-    ctx.fill(); ctx.stroke();
-    ctx.setLineDash([]);
   }
 
   // Draw in-progress shape
@@ -4387,26 +4312,6 @@ function dxfEdRenderAll() {
 
   // Draw measure
   if (DXFED.measurePts.length > 0) drawMeasure();
-
-  // Draw entity-snap indicator
-  if (DXFED._snapCandidate) {
-    const sc = DXFED._snapCandidate;
-    const cp = dxfToCanvas(sc.x, sc.y);
-    ctx.strokeStyle = '#f59e0b';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([]);
-    if (sc.kind === 'center') {
-      ctx.beginPath(); ctx.arc(cp.cx, cp.cy, 6, 0, Math.PI * 2); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(cp.cx - 8, cp.cy); ctx.lineTo(cp.cx + 8, cp.cy); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(cp.cx, cp.cy - 8); ctx.lineTo(cp.cx, cp.cy + 8); ctx.stroke();
-    } else if (sc.kind === 'midpoint') {
-      ctx.beginPath();
-      ctx.moveTo(cp.cx - 6, cp.cy + 6); ctx.lineTo(cp.cx, cp.cy - 6); ctx.lineTo(cp.cx + 6, cp.cy + 6);
-      ctx.closePath(); ctx.stroke();
-    } else {
-      ctx.strokeRect(cp.cx - 5, cp.cy - 5, 10, 10);
-    }
-  }
 }
 
 function drawEditorGrid() {
@@ -4430,14 +4335,12 @@ function drawEditorGrid() {
 
 function drawEntity(e) {
   const ctx = DXFED.ctx;
-  const sel   = e.selected;
-  const hover = (e.id === DXFED._hoverId);
-  const color = sel ? '#ffffff' : hover ? '#7db8ff' : (e.color || '#3d7eff');
+  const sel = e.selected;
+  const color = sel ? '#fff' : (e.color || '#3d7eff');
   ctx.strokeStyle = color;
-  ctx.lineWidth = (e.lw || 0.5) * DXFED.scale * 0.4 + (sel ? 1.5 : hover ? 0.8 : 0);
+  ctx.lineWidth = (e.lw || 0.5) * DXFED.scale * 0.4 + (sel ? 1 : 0);
   if (ctx.lineWidth < 0.8) ctx.lineWidth = 0.8;
   ctx.setLineDash([]);
-  if (hover && !sel) ctx.setLineDash([4, 2]);
 
   if (e.type === 'LINE') {
     const a = dxfToCanvas(e.x1, e.y1), b = dxfToCanvas(e.x2, e.y2);
@@ -4552,28 +4455,22 @@ function dxfMouseDown(e) {
   const dxf = canvasToDxf(cx, cy);
   const sp = snapPt(dxf.x, dxf.y);
 
-  // Middle-button pan or Alt+LMB pan
   if (e.button === 1 || (e.button === 0 && DXFED.tool === 'select' && e.altKey)) {
     DXFED.isPanning = true; DXFED.panStart = { cx, cy, ox: DXFED.offX, oy: DXFED.offY };
     DXFED.canvas.style.cursor = 'grabbing'; return;
   }
 
-  // All drawing/editing tools require LMB only
-  if (e.button !== 0) return;
-
   if (DXFED.tool === 'select') {
     const hit = hitTest(cx, cy);
     if (!e.shiftKey) DXFED.selectedIds.clear();
     if (hit !== null) {
-      // Hit something: toggle selection, start entity drag
       DXFED.selectedIds.has(hit) ? DXFED.selectedIds.delete(hit) : DXFED.selectedIds.add(hit);
       updateEntitySelected();
+      // begin drag
       DXFED.isDragging = true;
       DXFED.dragStart = sp;
     } else {
-      // Missed: start rubber-band box selection
       updateEntitySelected();
-      DXFED._rubberBand = { startCx: cx, startCy: cy, x: cx, y: cy, w: 0, h: 0 };
     }
 
   } else if (DXFED.tool === 'erase') {
@@ -4585,7 +4482,6 @@ function dxfMouseDown(e) {
     DXFED.measurePts.push({ x: dxf.x, y: dxf.y });
 
   } else if (['line','rect','circle','polyline'].includes(DXFED.tool)) {
-    // Drawing tools — LMB only (already gated above)
     if (!DXFED.drawState || !DXFED.drawState.start) {
       DXFED.drawState = { start: sp, cur: sp };
       if (DXFED.tool === 'polyline') DXFED.drawState.pts = [sp];
@@ -4624,68 +4520,12 @@ function dxfMouseMove(e) {
     DXFED.dragStart = sp;
     dxfEdRenderAll(); return;
   }
-  // Rubber-band selection box (LMB drag on empty canvas)
-  if (DXFED._rubberBand) {
-    const rb = DXFED._rubberBand;
-    rb.x = Math.min(cx, rb.startCx);
-    rb.y = Math.min(cy, rb.startCy);
-    rb.w = Math.abs(cx - rb.startCx);
-    rb.h = Math.abs(cy - rb.startCy);
-    dxfEdRenderAll(); return;
-  }
-  if (DXFED.drawState) { DXFED.drawState.cur = sp; dxfEdRenderAll(); return; }
-
-  // Hover detection — immediate highlight on mouse-over
-  const newHoverId = hitTest(cx, cy);
-  if (newHoverId !== DXFED._hoverId) {
-    DXFED._hoverId = newHoverId;
-    DXFED.canvas.style.cursor = newHoverId !== null ? 'pointer' : toolCursor();
-    dxfEdRenderAll();
-  }
+  if (DXFED.drawState) { DXFED.drawState.cur = sp; dxfEdRenderAll(); }
 }
 
 function dxfMouseUp(e) {
   if (DXFED.isPanning) { DXFED.isPanning = false; DXFED.canvas.style.cursor = toolCursor(); return; }
   if (DXFED.isDragging) { DXFED.isDragging = false; DXFED.dragStart = null; dxfEdPushHistory(); return; }
-
-  // Finish rubber-band box selection
-  if (DXFED._rubberBand) {
-    const rb = DXFED._rubberBand;
-    DXFED._rubberBand = null;
-    if (rb.w > 4 && rb.h > 4) {
-      // Convert canvas-pixel box to DXF coords
-      const tl = canvasToDxf(rb.x,         rb.y);
-      const br = canvasToDxf(rb.x + rb.w,   rb.y + rb.h);
-      const minX = Math.min(tl.x, br.x), maxX = Math.max(tl.x, br.x);
-      const minY = Math.min(tl.y, br.y), maxY = Math.max(tl.y, br.y);
-      if (!e.shiftKey) DXFED.selectedIds.clear();
-      for (const ent of DXFED.entities) {
-        if (!ent.visible) continue;
-        // Check if entity centre/extent overlaps the box
-        let inside = false;
-        if (ent.type === 'LINE') {
-          inside = (Math.min(ent.x1,ent.x2) >= minX && Math.max(ent.x1,ent.x2) <= maxX &&
-                    Math.min(ent.y1,ent.y2) >= minY && Math.max(ent.y1,ent.y2) <= maxY);
-        } else if (ent.type === 'CIRCLE') {
-          inside = (ent.cx - ent.r >= minX && ent.cx + ent.r <= maxX &&
-                    ent.cy - ent.r >= minY && ent.cy + ent.r <= maxY);
-        } else if (ent.type === 'LWPOLYLINE' && ent.vertices) {
-          const xs = ent.vertices.map(v=>v[0]), ys = ent.vertices.map(v=>v[1]);
-          inside = (Math.min(...xs) >= minX && Math.max(...xs) <= maxX &&
-                    Math.min(...ys) >= minY && Math.max(...ys) <= maxY);
-        } else {
-          // Generic: check bounding centre
-          const cp = dxfToCanvas(ent.cx || 0, ent.cy || 0);
-          inside = (cp.cx >= rb.x && cp.cx <= rb.x + rb.w &&
-                    cp.cy >= rb.y && cp.cy <= rb.y + rb.h);
-        }
-        if (inside) DXFED.selectedIds.add(ent.id);
-      }
-      updateEntitySelected();
-      dxfEdRenderAll(); updatePropsPanel(); return;
-    }
-    dxfEdRenderAll(); return;
-  }
 
   const rect = DXFED.canvas.getBoundingClientRect();
   const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
@@ -5441,6 +5281,277 @@ setTimeout(() => {
   if (document.getElementById('app')?.classList.contains('visible')) return;
   // Will show after login
 }, 2000);
+
+// ================================================================
+// v12 ADDITIVE PATCH — all overrides appended; original code untouched
+// ================================================================
+
+// ── 1. REFRESH BUTTON — injected after conversion result panel ───
+(function _v12InjectRefreshBtn() {
+  function _tryInject() {
+    const approveBtn = document.getElementById('approve-btn');
+    if (!approveBtn) { setTimeout(_tryInject, 500); return; }
+    const actionRow = approveBtn.parentElement;
+    if (!actionRow || document.getElementById('v12-refresh-btn')) return;
+    const wrapper = document.createElement('div');
+    wrapper.style.cssText = 'margin-top:8px';
+    wrapper.innerHTML = `<button id="v12-refresh-btn" class="btn w-full"
+      style="color:var(--text-dim);border-color:var(--border)"
+      onclick="doConvert()">
+      <i class="fas fa-sync-alt"></i> Refresh / Re-process Image
+    </button>`;
+    actionRow.parentNode.insertBefore(wrapper, actionRow.nextSibling);
+  }
+  // Inject as soon as DOM is ready (the button exists from page load)
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', _tryInject);
+  } else {
+    _tryInject();
+  }
+})();
+
+// ── 2. ENTITY SNAP — override snapPt ─────────────────────────────
+// Replaces grid-only snap with: endpoint / center / corner / quadrant
+// snap first, falling back to grid when nothing is close.
+const _v12_SNAP_RADIUS_PX = 14;
+
+function _v12GetSnapPoints() {
+  const pts = [];
+  for (const e of DXFED.entities) {
+    if (!e.visible) continue;
+    if (e.type === 'LINE') {
+      pts.push({ x: e.x1, y: e.y1, kind: 'endpoint' });
+      pts.push({ x: e.x2, y: e.y2, kind: 'endpoint' });
+      pts.push({ x: (e.x1+e.x2)/2, y: (e.y1+e.y2)/2, kind: 'midpoint' });
+    } else if (e.type === 'CIRCLE') {
+      pts.push({ x: e.cx, y: e.cy, kind: 'center' });
+      pts.push({ x: e.cx+e.r, y: e.cy, kind: 'quadrant' });
+      pts.push({ x: e.cx-e.r, y: e.cy, kind: 'quadrant' });
+      pts.push({ x: e.cx, y: e.cy+e.r, kind: 'quadrant' });
+      pts.push({ x: e.cx, y: e.cy-e.r, kind: 'quadrant' });
+    } else if (e.type === 'ARC') {
+      pts.push({ x: e.cx, y: e.cy, kind: 'center' });
+      const sa = e.startAngle * Math.PI/180, ea = e.endAngle * Math.PI/180;
+      pts.push({ x: e.cx+e.r*Math.cos(sa), y: e.cy+e.r*Math.sin(sa), kind: 'endpoint' });
+      pts.push({ x: e.cx+e.r*Math.cos(ea), y: e.cy+e.r*Math.sin(ea), kind: 'endpoint' });
+    } else if (e.type === 'LWPOLYLINE' && e.vertices) {
+      for (const v of e.vertices) pts.push({ x: v[0], y: v[1], kind: 'endpoint' });
+    }
+  }
+  return pts;
+}
+
+// Stores the current snap candidate for the visual indicator
+DXFED._v12SnapCandidate = null;
+
+const _origSnapPt = snapPt;
+window.snapPt = function(x, y) {
+  // Entity snap takes priority
+  if (DXFED.canvas) {
+    const rawC = dxfToCanvas(x, y);
+    const spts = _v12GetSnapPoints();
+    let best = null, bestD = _v12_SNAP_RADIUS_PX;
+    for (const sp of spts) {
+      const c = dxfToCanvas(sp.x, sp.y);
+      const d = Math.hypot(c.cx - rawC.cx, c.cy - rawC.cy);
+      if (d < bestD) { bestD = d; best = sp; }
+    }
+    if (best) {
+      DXFED._v12SnapCandidate = best;
+      return { x: best.x, y: best.y };
+    }
+  }
+  DXFED._v12SnapCandidate = null;
+  return _origSnapPt(x, y);
+};
+
+// ── 3. HOVER HIGHLIGHT — override drawEntity ─────────────────────
+const _origDrawEntity = drawEntity;
+window.drawEntity = function(e) {
+  const ctx = DXFED.ctx;
+  if (!ctx) return _origDrawEntity(e);
+  const isHover = (e.id === DXFED._v12HoverId) && !e.selected;
+  if (isHover) {
+    // Draw a subtle glow pass first
+    ctx.save();
+    ctx.strokeStyle = 'rgba(125,184,255,0.35)';
+    ctx.lineWidth = 6;
+    ctx.setLineDash([]);
+    _v12DrawEntityShape(e, ctx);
+    ctx.restore();
+  }
+  _origDrawEntity(e);
+};
+
+function _v12DrawEntityShape(e, ctx) {
+  if (e.type === 'LINE') {
+    const a = dxfToCanvas(e.x1,e.y1), b = dxfToCanvas(e.x2,e.y2);
+    ctx.beginPath(); ctx.moveTo(a.cx,a.cy); ctx.lineTo(b.cx,b.cy); ctx.stroke();
+  } else if (e.type === 'CIRCLE') {
+    const c = dxfToCanvas(e.cx,e.cy);
+    ctx.beginPath(); ctx.arc(c.cx,c.cy,e.r*DXFED.scale,0,Math.PI*2); ctx.stroke();
+  } else if (e.type === 'ARC') {
+    const c = dxfToCanvas(e.cx,e.cy);
+    ctx.beginPath(); ctx.arc(c.cx,c.cy,e.r*DXFED.scale,-e.endAngle*Math.PI/180,-e.startAngle*Math.PI/180); ctx.stroke();
+  } else if (e.type === 'LWPOLYLINE' && e.vertices && e.vertices.length >= 2) {
+    ctx.beginPath();
+    const p0 = dxfToCanvas(e.vertices[0][0],e.vertices[0][1]);
+    ctx.moveTo(p0.cx,p0.cy);
+    for (let i=1;i<e.vertices.length;i++){const p=dxfToCanvas(e.vertices[i][0],e.vertices[i][1]);ctx.lineTo(p.cx,p.cy);}
+    if (e.closed) ctx.closePath();
+    ctx.stroke();
+  }
+}
+
+// ── 4. RENDER — override dxfEdRenderAll to add rubber-band & snap UI
+const _origDxfEdRenderAll = dxfEdRenderAll;
+window.dxfEdRenderAll = function() {
+  _origDxfEdRenderAll();
+  const { canvas, ctx } = DXFED;
+  if (!canvas || !ctx) return;
+
+  // Rubber-band selection rectangle
+  if (DXFED._v12RubberBand) {
+    const rb = DXFED._v12RubberBand;
+    ctx.save();
+    ctx.strokeStyle = 'rgba(61,126,255,0.85)';
+    ctx.fillStyle   = 'rgba(61,126,255,0.07)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 3]);
+    ctx.beginPath(); ctx.rect(rb.x, rb.y, rb.w, rb.h);
+    ctx.fill(); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+
+  // Entity-snap indicator
+  if (DXFED._v12SnapCandidate) {
+    const sc = DXFED._v12SnapCandidate;
+    const cp = dxfToCanvas(sc.x, sc.y);
+    ctx.save();
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([]);
+    if (sc.kind === 'center') {
+      ctx.beginPath(); ctx.arc(cp.cx,cp.cy,6,0,Math.PI*2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cp.cx-9,cp.cy); ctx.lineTo(cp.cx+9,cp.cy); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(cp.cx,cp.cy-9); ctx.lineTo(cp.cx,cp.cy+9); ctx.stroke();
+    } else if (sc.kind === 'midpoint') {
+      ctx.beginPath();
+      ctx.moveTo(cp.cx-6,cp.cy+6); ctx.lineTo(cp.cx,cp.cy-6); ctx.lineTo(cp.cx+6,cp.cy+6);
+      ctx.closePath(); ctx.stroke();
+    } else {
+      ctx.strokeRect(cp.cx-5,cp.cy-5,10,10);
+    }
+    ctx.restore();
+  }
+};
+
+// ── 5. MOUSE EVENTS — override to add rubber-band + hover + LMB-only
+DXFED._v12HoverId    = null;
+DXFED._v12RubberBand = null;
+
+const _origDxfMouseDown = dxfMouseDown;
+window.dxfMouseDown = function(e) {
+  // Middle-button / Alt+LMB → pass through (pan)
+  if (e.button === 1 || (e.button === 0 && e.altKey)) {
+    return _origDxfMouseDown(e);
+  }
+  // All tools require LMB only
+  if (e.button !== 0) return;
+
+  if (DXFED.tool === 'select') {
+    const rect = DXFED.canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const hit = hitTest(cx, cy);
+    if (hit !== null) {
+      // Entity hit — delegate normally (handles drag, shift-select, etc.)
+      return _origDxfMouseDown(e);
+    }
+    // Miss — start rubber-band instead of clearing selection silently
+    if (!e.shiftKey) DXFED.selectedIds.clear();
+    updateEntitySelected();
+    DXFED._v12RubberBand = { startCx: cx, startCy: cy, x: cx, y: cy, w: 0, h: 0 };
+    dxfEdRenderAll();
+    return;
+  }
+
+  // All other tools: LMB already confirmed, pass through
+  _origDxfMouseDown(e);
+};
+
+const _origDxfMouseMove = dxfMouseMove;
+window.dxfMouseMove = function(e) {
+  // Update rubber-band if active
+  if (DXFED._v12RubberBand) {
+    const rect = DXFED.canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const rb = DXFED._v12RubberBand;
+    rb.x = Math.min(cx, rb.startCx);
+    rb.y = Math.min(cy, rb.startCy);
+    rb.w = Math.abs(cx - rb.startCx);
+    rb.h = Math.abs(cy - rb.startCy);
+    dxfEdRenderAll();
+    // Still update coordinate display
+    const dxf = canvasToDxf(cx, cy);
+    document.getElementById('dxf-cur-x').textContent = dxf.x.toFixed(1);
+    document.getElementById('dxf-cur-y').textContent = dxf.y.toFixed(1);
+    return;
+  }
+
+  _origDxfMouseMove(e);
+
+  // Hover detection — update _v12HoverId after base handler runs
+  if (!DXFED.isDragging && !DXFED.isPanning && !DXFED.drawState) {
+    const rect = DXFED.canvas.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const newId = hitTest(cx, cy);
+    if (newId !== DXFED._v12HoverId) {
+      DXFED._v12HoverId = newId;
+      DXFED.canvas.style.cursor = newId !== null ? 'pointer' : toolCursor();
+      dxfEdRenderAll();
+    }
+  }
+};
+
+const _origDxfMouseUp = dxfMouseUp;
+window.dxfMouseUp = function(e) {
+  if (DXFED._v12RubberBand) {
+    const rb = DXFED._v12RubberBand;
+    DXFED._v12RubberBand = null;
+    if (rb.w > 4 && rb.h > 4) {
+      const tl = canvasToDxf(rb.x,       rb.y);
+      const br = canvasToDxf(rb.x+rb.w,  rb.y+rb.h);
+      const minX=Math.min(tl.x,br.x), maxX=Math.max(tl.x,br.x);
+      const minY=Math.min(tl.y,br.y), maxY=Math.max(tl.y,br.y);
+      if (!e.shiftKey) DXFED.selectedIds.clear();
+      for (const ent of DXFED.entities) {
+        if (!ent.visible) continue;
+        let inside = false;
+        if (ent.type === 'LINE') {
+          inside = Math.min(ent.x1,ent.x2)>=minX && Math.max(ent.x1,ent.x2)<=maxX
+                && Math.min(ent.y1,ent.y2)>=minY && Math.max(ent.y1,ent.y2)<=maxY;
+        } else if (ent.type === 'CIRCLE') {
+          inside = ent.cx-ent.r>=minX && ent.cx+ent.r<=maxX
+                && ent.cy-ent.r>=minY && ent.cy+ent.r<=maxY;
+        } else if (ent.type === 'LWPOLYLINE' && ent.vertices) {
+          const xs=ent.vertices.map(v=>v[0]), ys=ent.vertices.map(v=>v[1]);
+          inside = Math.min(...xs)>=minX && Math.max(...xs)<=maxX
+                && Math.min(...ys)>=minY && Math.max(...ys)<=maxY;
+        }
+        if (inside) DXFED.selectedIds.add(ent.id);
+      }
+      updateEntitySelected();
+      dxfEdRenderAll(); updatePropsPanel();
+    } else {
+      dxfEdRenderAll();
+    }
+    return;
+  }
+  _origDxfMouseUp(e);
+};
+
+// ── end v12 patch ─────────────────────────────────────────────────
 </script>
 
 </body>
