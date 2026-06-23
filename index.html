@@ -1646,6 +1646,7 @@
           <button class="btn" onclick="cadFitView()" title="Fit all"><i class="fas fa-expand-arrows-alt"></i> Fit</button>
           <button class="btn" onclick="cadUndo()" title="Undo (Ctrl+Z)"><i class="fas fa-undo"></i> Undo</button>
           <button class="btn" onclick="cadExportDXF()" title="Export DXF"><i class="fas fa-download"></i> DXF</button>
+          <button class="btn" onclick="cadOpenGCodeModal()" title="Generate &amp; Simulate G-Code" style="background:var(--accent2);color:#000;font-weight:600"><i class="fas fa-robot"></i> G-Code</button>
           <button class="btn" id="viewer-approve-btn" onclick="approveFromViewer()"><i class="fas fa-check"></i> Approve</button>
           <button class="btn btn-accent cloud-save-btn" id="viewer-save-btn" onclick="openCloudSaveModal()" style="display:none">
             <i class="fas fa-cloud-upload-alt"></i> Save to Cloud
@@ -1763,8 +1764,18 @@
             <canvas id="cad-canvas"></canvas>
             <!-- Snap marker -->
             <div class="cad-snap-marker" id="cad-snap-marker" style="display:none">
-              <svg width="16" height="16" viewBox="0 0 16 16">
-                <rect x="3" y="3" width="10" height="10" fill="none" stroke="#ff0" stroke-width="1.5"/>
+              <svg id="cad-snap-svg" width="18" height="18" viewBox="0 0 18 18">
+                <!-- endpoint: square -->
+                <rect id="snap-sq" x="4" y="4" width="10" height="10" fill="none" stroke="#ffcc00" stroke-width="1.8" display="block"/>
+                <!-- center: circle with cross -->
+                <circle id="snap-ci" cx="9" cy="9" r="5" fill="none" stroke="#00d4a0" stroke-width="1.8" display="none"/>
+                <line id="snap-ci-h" x1="4" y1="9" x2="14" y2="9" stroke="#00d4a0" stroke-width="1" display="none"/>
+                <line id="snap-ci-v" x1="9" y1="4" x2="9" y2="14" stroke="#00d4a0" stroke-width="1" display="none"/>
+                <!-- corner: triangle -->
+                <polygon id="snap-tri" points="9,3 15,15 3,15" fill="none" stroke="#ff8800" stroke-width="1.8" display="none"/>
+                <!-- intersection: X -->
+                <line id="snap-x1" x1="4" y1="4" x2="14" y2="14" stroke="#ff4444" stroke-width="2" display="none"/>
+                <line id="snap-x2" x1="14" y1="4" x2="4" y2="14" stroke="#ff4444" stroke-width="2" display="none"/>
               </svg>
             </div>
             <!-- Selection box -->
@@ -2445,6 +2456,82 @@
 </div>
 
 <!-- PROVIDER DETAIL MODAL -->
+<!-- ═══ G-CODE MODAL ═══════════════════════════════════════════════════════ -->
+<div class="modal-overlay" id="gcode-gen-modal">
+  <div class="modal" style="width:900px;max-width:96vw">
+    <div class="modal-header">
+      <div class="modal-title"><i class="fas fa-robot" style="color:var(--accent2);margin-right:10px"></i>G-Code Generator &amp; Simulator</div>
+      <button class="modal-close" onclick="closeModal('gcode-gen-modal')"><i class="fas fa-times"></i></button>
+    </div>
+    <div class="modal-body" style="padding:16px">
+      <div style="display:grid;grid-template-columns:220px 1fr;gap:16px">
+        <!-- Settings panel -->
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);margin-bottom:4px">Machine Settings</div>
+          <div class="auth-field" style="margin:0">
+            <label>Machine Type</label>
+            <select id="gc-machine" class="cad-prop-input" style="width:100%">
+              <option value="router">CNC Router</option>
+              <option value="laser">Laser Cutter</option>
+              <option value="mill">CNC Mill</option>
+              <option value="plasma">Plasma Cutter</option>
+              <option value="waterjet">Waterjet</option>
+            </select>
+          </div>
+          <div class="auth-field" style="margin:0">
+            <label>Feed Rate (mm/min)</label>
+            <input type="number" id="gc-feed" class="cad-prop-input" value="800" style="width:100%">
+          </div>
+          <div class="auth-field" style="margin:0">
+            <label>Plunge Rate (mm/min)</label>
+            <input type="number" id="gc-plunge" class="cad-prop-input" value="300" style="width:100%">
+          </div>
+          <div class="auth-field" style="margin:0">
+            <label>Safe Z (mm)</label>
+            <input type="number" id="gc-safez" class="cad-prop-input" value="5" style="width:100%">
+          </div>
+          <div class="auth-field" style="margin:0">
+            <label>Cut Depth Z (mm)</label>
+            <input type="number" id="gc-cutz" class="cad-prop-input" value="-1" style="width:100%">
+          </div>
+          <div class="auth-field" style="margin:0">
+            <label>Units</label>
+            <select id="gc-units" class="cad-prop-input" style="width:100%">
+              <option value="mm">Millimeters (G21)</option>
+              <option value="inch">Inches (G20)</option>
+            </select>
+          </div>
+          <button class="btn btn-accent" style="margin-top:4px;background:var(--accent2);color:#000;font-weight:700" onclick="cadGenerateGCode()">
+            <i class="fas fa-cogs"></i> Generate G-Code
+          </button>
+          <button class="btn" id="gc-download-btn" style="display:none" onclick="cadDownloadGCode()">
+            <i class="fas fa-download"></i> Download .nc File
+          </button>
+          <div id="gc-stats" style="font-size:11px;color:var(--text-dim);margin-top:4px;line-height:1.8"></div>
+        </div>
+        <!-- Preview + simulation -->
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted)">Simulation Preview</div>
+            <button class="btn" id="gc-sim-btn" style="display:none;font-size:11px;padding:4px 10px" onclick="cadSimulateGCode()"><i class="fas fa-play"></i> Simulate</button>
+            <button class="btn" id="gc-sim-stop" style="display:none;font-size:11px;padding:4px 10px;background:var(--danger)" onclick="cadStopSimulation()"><i class="fas fa-stop"></i> Stop</button>
+          </div>
+          <canvas id="gc-sim-canvas" width="640" height="420" style="background:#0a0c0f;border:1px solid var(--border-med);border-radius:8px;width:100%;height:420px"></canvas>
+          <div style="display:flex;gap:8px">
+            <div style="flex:1">
+              <div style="font-size:11px;color:var(--text-muted);margin-bottom:4px">G-Code Preview</div>
+              <textarea id="gc-code-preview" readonly style="width:100%;height:120px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:8px;font-family:var(--font-mono);font-size:10px;color:var(--accent2);resize:none;outline:none"></textarea>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('gcode-gen-modal')">Close</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-overlay" id="provider-modal">
   <div class="modal">
     <div class="modal-header">
@@ -3462,6 +3549,8 @@ const CAD = {
   entities: [],
   nextId: 1,
   selected: new Set(),
+  clipboard: [],   // internal clipboard for copy/paste
+  hoverId: null,   // entity id under cursor for hover highlight
   undoStack: [],
   tool: 'select',
   drawState: null,
@@ -3490,38 +3579,83 @@ function cadScreenToWorld(sx, sy) {
 }
 
 function cadSnapPoint(wx, wy) {
-  if (!CAD.osnap) return { x: wx, y: wy };
+  if (!CAD.osnap) return { x: wx, y: wy, snapType: null };
   let best = null, bestD = 12 / CAD.zoom;
   const pts = cadGetSnapPoints();
   for (const p of pts) {
     const d = Math.hypot(p.x - wx, p.y - wy);
     if (d < bestD) { bestD = d; best = p; }
   }
-  if (best) return best;
+  if (best) return best; // has .type from cadGetSnapPoints
   const g = CAD.snapGrid;
-  return { x: Math.round(wx / g) * g, y: Math.round(wy / g) * g };
+  return { x: Math.round(wx / g) * g, y: Math.round(wy / g) * g, type: 'grid' };
+}
+
+function cadUpdateSnapMarker(snapped) {
+  const sm = document.getElementById('cad-snap-marker');
+  if (!sm || !CAD.osnap) { if(sm) sm.style.display='none'; return; }
+  const sc = cadWorldToScreen(snapped.x, snapped.y);
+  sm.style.display = 'block';
+  sm.style.left = (sc.x - 9) + 'px';
+  sm.style.top  = (sc.y - 9) + 'px';
+  // Show correct snap symbol
+  const sq=document.getElementById('snap-sq'),ci=document.getElementById('snap-ci'),
+        cih=document.getElementById('snap-ci-h'),civ=document.getElementById('snap-ci-v'),
+        tri=document.getElementById('snap-tri'),x1=document.getElementById('snap-x1'),x2=document.getElementById('snap-x2');
+  const hide=el=>{if(el)el.setAttribute('display','none');};
+  const show=el=>{if(el)el.setAttribute('display','block');};
+  [sq,ci,cih,civ,tri,x1,x2].forEach(hide);
+  const t = snapped.type || 'grid';
+  if (t==='endpoint') { show(sq); }
+  else if (t==='center'||t==='quadrant') { show(ci);show(cih);show(civ); }
+  else if (t==='corner') { show(tri); }
+  else if (t==='intersection') { show(x1);show(x2); }
+  else { show(sq); } // grid snap = small square
 }
 
 function cadGetSnapPoints() {
   const pts = [];
+  // Collect endpoints, centers, corners (NOT midpoints of lines)
   for (const e of CAD.entities) {
     if (e.type === 'line') {
-      pts.push({ x: e.x1, y: e.y1 }, { x: e.x2, y: e.y2 },
-        { x: (e.x1+e.x2)/2, y: (e.y1+e.y2)/2 });
+      // Start and end points only
+      pts.push({ x: e.x1, y: e.y1, type: 'endpoint' },
+               { x: e.x2, y: e.y2, type: 'endpoint' });
     } else if (e.type === 'circle') {
-      pts.push({ x: e.cx, y: e.cy },
-        { x: e.cx+e.r, y: e.cy }, { x: e.cx-e.r, y: e.cy },
-        { x: e.cx, y: e.cy+e.r }, { x: e.cx, y: e.cy-e.r });
+      // Center and quadrant points
+      pts.push({ x: e.cx, y: e.cy, type: 'center' },
+               { x: e.cx+e.r, y: e.cy, type: 'quadrant' },
+               { x: e.cx-e.r, y: e.cy, type: 'quadrant' },
+               { x: e.cx, y: e.cy+e.r, type: 'quadrant' },
+               { x: e.cx, y: e.cy-e.r, type: 'quadrant' });
     } else if (e.type === 'arc') {
-      pts.push({ x: e.cx, y: e.cy });
+      // Center and arc endpoints
+      pts.push({ x: e.cx, y: e.cy, type: 'center' },
+               { x: e.cx + e.r*Math.cos(e.startAngle), y: e.cy + e.r*Math.sin(e.startAngle), type: 'endpoint' },
+               { x: e.cx + e.r*Math.cos(e.endAngle),   y: e.cy + e.r*Math.sin(e.endAngle),   type: 'endpoint' });
     } else if (e.type === 'polyline' || e.type === 'lwpolyline') {
-      for (const p of (e.points||[])) pts.push({ x: p[0], y: p[1] });
+      // All vertices (corners/endpoints)
+      for (const p of (e.points||[])) pts.push({ x: p[0], y: p[1], type: 'endpoint' });
     } else if (e.type === 'rect') {
+      // Four corners and center
       pts.push(
-        { x: e.x, y: e.y }, { x: e.x+e.w, y: e.y },
-        { x: e.x, y: e.y+e.h }, { x: e.x+e.w, y: e.y+e.h },
-        { x: e.x+e.w/2, y: e.y+e.h/2 }
+        { x: e.x,       y: e.y,       type: 'corner' },
+        { x: e.x+e.w,   y: e.y,       type: 'corner' },
+        { x: e.x,       y: e.y+e.h,   type: 'corner' },
+        { x: e.x+e.w,   y: e.y+e.h,   type: 'corner' },
+        { x: e.x+e.w/2, y: e.y+e.h/2, type: 'center' }
       );
+    }
+  }
+  // Add intersection points between lines
+  const lines = CAD.entities.filter(e => e.type === 'line');
+  for (let i = 0; i < lines.length; i++) {
+    for (let j = i+1; j < lines.length; j++) {
+      const ix = cadLineIntersectCore(
+        lines[i].x1, lines[i].y1, lines[i].x2, lines[i].y2,
+        lines[j].x1, lines[j].y1, lines[j].x2, lines[j].y2, true
+      );
+      if (ix) pts.push({ x: ix.x, y: ix.y, type: 'intersection' });
     }
   }
   return pts;
@@ -3607,7 +3741,15 @@ function cadOnMouseDown(e) {
   if (CAD.tool === 'dimlin')   { cadDimClick(p,'linear'); return; }
   if (CAD.tool === 'dimali')   { cadDimClick(p,'aligned'); return; }
   if (CAD.tool === 'dimrad')   { cadDimRadClick(p); return; }
-  if (CAD.tool === 'rotate' || CAD.tool === 'mirror' || CAD.tool === 'scale' || CAD.tool === 'array' || CAD.tool === 'align' || CAD.tool === 'lengthen' || CAD.tool === 'insert') return;
+  if (CAD.tool === 'rotate' || CAD.tool === 'mirror' || CAD.tool === 'scale' || CAD.tool === 'array' || CAD.tool === 'align' || CAD.tool === 'lengthen' || CAD.tool === 'insert') {
+    // Allow click-to-select when no objects are selected
+    if (!CAD.selected.size) {
+      const hit = cadHitTest(p.x, p.y);
+      if (hit) { CAD.selected.add(hit.id); cadUpdateSelProps(); cadRender(); showNotif('info', 'Selected', 'Object selected. Now apply the operation.'); }
+      else { cadSelectMouseDown({shiftKey:false}, p); }
+    }
+    return;
+  }
   cadDrawMouseDown(p);
 }
 
@@ -3627,14 +3769,15 @@ function cadOnMouseMove(e) {
   CAD.mouse = { x: raw.x, y: raw.y, snapX: snapped.x, snapY: snapped.y };
   const el = document.getElementById('cad-coord-xy');
   if (el) el.innerHTML = `X: <span>${snapped.x.toFixed(2)}</span>&nbsp;&nbsp;Y: <span>${snapped.y.toFixed(2)}</span>`;
-  const sm = document.getElementById('cad-snap-marker');
-  if (sm && CAD.osnap) {
-    const sc = cadWorldToScreen(snapped.x, snapped.y);
-    sm.style.display = 'block';
-    sm.style.left = (sc.x - 8) + 'px'; sm.style.top = (sc.y - 8) + 'px';
-  } else if (sm) sm.style.display = 'none';
+  cadUpdateSnapMarker(snapped);
   if (CAD.selDrag) { cadSelDragMove(sx, sy); return; }
   if (CAD.moveState && CAD.moveState.dragging) { cadMoveDrag(snapped); cadRender(); return; }
+  // Hover highlighting in select/modify modes
+  if (CAD.tool === 'select' || CAD.tool === 'move' || CAD.tool === 'copy' || CAD.tool === 'trim' || CAD.tool === 'extend') {
+    const hit = cadHitTest(raw.x, raw.y);
+    const newHover = hit ? hit.id : null;
+    if (newHover !== CAD.hoverId) { CAD.hoverId = newHover; cadRender(); return; }
+  }
   cadRender();
 }
 
@@ -3655,6 +3798,9 @@ function cadOnKeyDown(e) {
   if (e.code === 'Delete' || e.code === 'Backspace') cadDeleteSelected();
   if (e.ctrlKey && e.code === 'KeyZ') { e.preventDefault(); cadUndo(); }
   if (e.ctrlKey && e.code === 'KeyA') { e.preventDefault(); CAD.entities.forEach(en => CAD.selected.add(en.id)); cadRender(); cadUpdateSelProps(); }
+  if (e.ctrlKey && e.code === 'KeyC') { e.preventDefault(); cadCopyToClipboard(); }
+  if (e.ctrlKey && e.code === 'KeyV') { e.preventDefault(); cadPasteFromClipboard(); }
+  if (e.ctrlKey && e.code === 'KeyX') { e.preventDefault(); cadCopyToClipboard(); cadDeleteSelected(); }
   if (e.code === 'KeyL' && !e.ctrlKey) cadSetTool('line');
   if (e.code === 'KeyR' && !e.ctrlKey) cadSetTool('rect');
   if (e.code === 'KeyC' && !e.ctrlKey) cadSetTool('circle');
@@ -3780,9 +3926,12 @@ function cadSelDragEnd(e) {
 }
 
 function cadHitTest(wx, wy) {
-  const tol = 6/CAD.zoom;
+  // Pickbox tolerance: 8px on screen, scaled to world units
+  const tol = 8/CAD.zoom;
   for (let i=CAD.entities.length-1; i>=0; i--) {
-    if (cadPointNearEntity(wx,wy,CAD.entities[i],tol)) return CAD.entities[i];
+    const e = CAD.entities[i];
+    if (CAD.layerVis[e.layer] === false) continue;
+    if (cadPointNearEntity(wx,wy,e,tol)) return e;
   }
   return null;
 }
@@ -3913,7 +4062,13 @@ function cadFindEnclosingBBox(p) {
 CAD.moveState = null;
 
 function cadMoveMouseDown(p) {
-  if(!CAD.selected.size){cadSelectMouseDown({shiftKey:false},p);return;}
+  if(!CAD.selected.size){
+    // Try to select under cursor first
+    const hit = cadHitTest(p.x, p.y);
+    if(hit){ CAD.selected.add(hit.id); cadUpdateSelProps(); cadRender(); }
+    else { cadSelectMouseDown({shiftKey:false},p); }
+    return;
+  }
   CAD.moveState={dragging:true,base:p,origPositions:cadCapturePositions()};
 }
 function cadMoveDrag(p) {
@@ -3927,12 +4082,60 @@ function cadMoveEnd() {
   cadPushUndo();cadMarkDirty();CAD.moveState=null;cadRender();
 }
 function cadCopyMouseDown(p) {
-  if(!CAD.selected.size)return;
+  // Copy tool: if no selection, try to select object at click point first
+  if(!CAD.selected.size){
+    const hit = cadHitTest(p.x, p.y);
+    if(hit){ CAD.selected.add(hit.id); cadUpdateSelProps(); cadRender(); }
+    showNotif('info','Copy Tool','Select objects then click again to paste copy');
+    return;
+  }
+  cadCopyToClipboard();
+  cadPasteFromClipboard(p);
+}
+
+function cadCopyToClipboard() {
+  if(!CAD.selected.size){ showNotif('warn','Nothing selected','Select objects first (Ctrl+A for all)'); return; }
+  CAD.clipboard = [];
+  // Find centroid of selection for relative paste offset
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  for(const e of CAD.entities){
+    if(!CAD.selected.has(e.id))continue;
+    const bb=cadEntityBBox(e);
+    if(bb){minX=Math.min(minX,bb.minX);maxX=Math.max(maxX,bb.maxX);minY=Math.min(minY,bb.minY);maxY=Math.max(maxY,bb.maxY);}
+  }
+  const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
+  for(const e of CAD.entities){
+    if(!CAD.selected.has(e.id))continue;
+    const clone=JSON.parse(JSON.stringify(e));
+    clone._clipOffX = clone._clipOffX || 0; // preserve
+    CAD.clipboard.push(clone);
+  }
+  CAD.clipboard._centroid = { x: cx, y: cy };
+  showNotif('success','Copied',`${CAD.clipboard.length} object(s) in clipboard · Ctrl+V to paste`);
+}
+
+function cadPasteFromClipboard(targetPt) {
+  if(!CAD.clipboard || !CAD.clipboard.length){ showNotif('warn','Clipboard empty','Copy objects first with Ctrl+C'); return; }
   cadPushUndo();
-  const copies=[];
-  for(const e of CAD.entities){if(!CAD.selected.has(e.id))continue;const clone=JSON.parse(JSON.stringify(e));clone.id=cadNewId();copies.push(clone);}
-  copies.forEach(c=>CAD.entities.push(c));
-  cadMarkDirty();cadUpdateInfo();cadRender();
+  // Paste with 20mm offset if no target point provided
+  const cent = CAD.clipboard._centroid || { x: 0, y: 0 };
+  const dest = targetPt || { x: cent.x + 20, y: cent.y - 20 };
+  const dx = dest.x - cent.x, dy = dest.y - cent.y;
+  const pasted = [];
+  for(const e of CAD.clipboard){
+    const clone=JSON.parse(JSON.stringify(e));
+    clone.id=cadNewId();
+    cadTranslateEntity(clone, dx, dy);
+    CAD.entities.push(clone);
+    pasted.push(clone.id);
+  }
+  // Select newly pasted objects
+  CAD.selected.clear();
+  pasted.forEach(id => CAD.selected.add(id));
+  // Update centroid for next paste (cascade offset)
+  CAD.clipboard._centroid = { x: dest.x, y: dest.y };
+  cadMarkDirty();cadUpdateInfo();cadUpdateSelProps();cadRender();
+  showNotif('success','Pasted',`${pasted.length} object(s) pasted`);
 }
 function cadCapturePositions(){return CAD.entities.filter(e=>CAD.selected.has(e.id)).map(e=>({id:e.id,data:JSON.parse(JSON.stringify(e))}));}
 function cadRestorePositions(saved){for(const s of saved){const idx=CAD.entities.findIndex(e=>e.id===s.id);if(idx>=0)CAD.entities[idx]=JSON.parse(JSON.stringify(s.data));}}
@@ -4091,8 +4294,8 @@ function cadDimClick(p,kind) {
   if(!CAD.dimState.p2){CAD.dimState.p2=p;return;}
   cadPushUndo();
   const ds=CAD.dimState,dist=Math.hypot(ds.p2.x-ds.p1.x,ds.p2.y-ds.p1.y),label=dist.toFixed(2)+' mm';
-  const dx=ds.p2.x-ds.p1.x,dy=ds.p2.y-ds.p1.y,len=Math.hypot(dx,dy)||1,nx=-dy/len,ny=dx/len,off=8;
-  CAD.entities.push({id:cadNewId(),type:'dimension',kind,x1:ds.p1.x,y1:ds.p1.y,x2:ds.p2.x,y2:ds.p2.y,tx:p.x,ty:p.y,label,ox:nx*off,oy:ny*off,color:'#ff4444',lw:0.5,layer:'d'});
+  const dx=ds.p2.x-ds.p1.x,dy=ds.p2.y-ds.p1.y,len=Math.hypot(dx,dy)||1,nx=-dy/len,ny=dx/len,off=30;
+  CAD.entities.push({id:cadNewId(),type:'dimension',kind,x1:ds.p1.x,y1:ds.p1.y,x2:ds.p2.x,y2:ds.p2.y,tx:p.x,ty:p.y,label,ox:nx*off,oy:ny*off,color:'#ff4444',lw:1.5,layer:'d'});
   CAD.dimState=null;cadMarkDirty();cadUpdateInfo();cadRender();
 }
 
@@ -4276,8 +4479,9 @@ function cadSetLineStyle(ctx,style,lw) {
 }
 
 function cadDrawEntity(ctx,e,selected) {
-  const color=selected?'#ffcc00':cadEntityColor(e);
-  const lw=(e.lw||1)*(selected?2:1);
+  const hover = !selected && e.id === CAD.hoverId;
+  const color=selected?'#ffcc00':hover?'#88ccff':cadEntityColor(e);
+  const lw=(e.lw||1)*(selected?2:hover?1.6:1);
   ctx.strokeStyle=color;ctx.fillStyle=color;
   cadSetLineStyle(ctx,e.style,lw);
 
@@ -4316,27 +4520,41 @@ function cadDrawEntity(ctx,e,selected) {
 }
 
 function cadDrawDimension(ctx,e,color) {
-  ctx.setLineDash([]);ctx.strokeStyle=color;ctx.lineWidth=0.8;
+  ctx.setLineDash([]);ctx.strokeStyle=color;ctx.lineWidth=1.5;
   const p1=cadWorldToScreen(e.x1,e.y1),p2=cadWorldToScreen(e.x2,e.y2);
-  const off=10,dx=p2.x-p1.x,dy=p2.y-p1.y,len=Math.hypot(dx,dy)||1;
+  // Offset = 30mm in world units, converted to screen pixels
+  const offWorld=30, offPx=offWorld*CAD.zoom;
+  const dx=p2.x-p1.x,dy=p2.y-p1.y,len=Math.hypot(dx,dy)||1;
   const nx=-dy/len,ny=dx/len;
+  // Extension lines
   ctx.beginPath();
-  ctx.moveTo(p1.x+nx*2,p1.y+ny*2);ctx.lineTo(p1.x+nx*off,p1.y+ny*off);
-  ctx.moveTo(p2.x+nx*2,p2.y+ny*2);ctx.lineTo(p2.x+nx*off,p2.y+ny*off);
-  ctx.moveTo(p1.x+nx*off,p1.y+ny*off);ctx.lineTo(p2.x+nx*off,p2.y+ny*off);
+  ctx.moveTo(p1.x+nx*4,p1.y+ny*4);ctx.lineTo(p1.x+nx*offPx,p1.y+ny*offPx);
+  ctx.moveTo(p2.x+nx*4,p2.y+ny*4);ctx.lineTo(p2.x+nx*offPx,p2.y+ny*offPx);
+  // Dimension line
+  ctx.moveTo(p1.x+nx*offPx,p1.y+ny*offPx);ctx.lineTo(p2.x+nx*offPx,p2.y+ny*offPx);
   ctx.stroke();
-  const al=7,aw=3,dirX=dx/len,dirY=dy/len;
+  // Arrowheads — 12px long, 4px wide (larger)
+  const al=12,aw=4,dirX=dx/len,dirY=dy/len;
   [p1,p2].forEach((pt,i)=>{
     const d=i===0?1:-1;
-    ctx.beginPath();ctx.moveTo(pt.x+nx*off,pt.y+ny*off);
-    ctx.lineTo(pt.x+nx*off+dirX*d*al-dirY*d*aw,pt.y+ny*off+dirY*d*al+dirX*d*aw);
-    ctx.lineTo(pt.x+nx*off+dirX*d*al+dirY*d*aw,pt.y+ny*off-dirX*d*aw+dirY*d*al);
+    ctx.beginPath();
+    ctx.moveTo(pt.x+nx*offPx,pt.y+ny*offPx);
+    ctx.lineTo(pt.x+nx*offPx+dirX*d*al-dirY*d*aw,pt.y+ny*offPx+dirY*d*al+dirX*d*aw);
+    ctx.lineTo(pt.x+nx*offPx+dirX*d*al+dirY*d*aw,pt.y+ny*offPx-dirX*d*aw+dirY*d*al);
     ctx.closePath();ctx.fillStyle=color;ctx.fill();
   });
+  // Text — fixed 11px screen size regardless of zoom (50mm world equivalent rendered at constant screen size)
+  const midX=(p1.x+p2.x)/2+nx*offPx;
+  const midY=(p1.y+p2.y)/2+ny*offPx;
   const tsp=cadWorldToScreen(e.tx||((e.x1+e.x2)/2),e.ty||((e.y1+e.y2)/2));
-  const tx=e.tx?tsp.x:(p1.x+p2.x)/2+nx*off,ty=e.ty?tsp.y:(p1.y+p2.y)/2+ny*off-4;
-  const fsz=Math.max(9,Math.min(14,10*CAD.zoom));
-  ctx.font=`${fsz}px DM Mono, monospace`;ctx.fillStyle=color;ctx.textAlign='center';
+  const tx=e.tx?tsp.x:midX, ty=e.ty?tsp.y:midY-6;
+  const fsz=11; // Fixed pixel size — does NOT scale with zoom
+  ctx.font=`bold ${fsz}px DM Mono, monospace`;ctx.fillStyle=color;ctx.textAlign='center';
+  // White background for readability
+  const tw=ctx.measureText(e.label||'').width;
+  ctx.fillStyle=CAD.darkBg?'rgba(10,12,15,0.75)':'rgba(248,248,240,0.75)';
+  ctx.fillRect(tx-tw/2-3,ty-fsz+1,tw+6,fsz+3);
+  ctx.fillStyle=color;
   ctx.fillText(e.label||'',tx,ty);ctx.textAlign='left';
 }
 
@@ -4479,6 +4697,234 @@ function cadExportDXF() {
   showNotif('success','DXF Exported','sheetforge_edit.dxf saved');
 }
 
+// ─ G-Code Generator & Simulator ───────────────────────────────────────
+
+let gcodeData = null;
+let gcSimTimer = null;
+
+function cadOpenGCodeModal() {
+  openModal('gcode-gen-modal');
+  // Draw current entities on sim canvas
+  cadGcSimDraw([]);
+}
+
+function cadGenerateGCode() {
+  const feed   = parseFloat(document.getElementById('gc-feed').value)   || 800;
+  const plunge = parseFloat(document.getElementById('gc-plunge').value)  || 300;
+  const safeZ  = parseFloat(document.getElementById('gc-safez').value)   || 5;
+  const cutZ   = parseFloat(document.getElementById('gc-cutz').value)    || -1;
+  const units  = document.getElementById('gc-units').value;
+  const mtype  = document.getElementById('gc-machine').value;
+  const isLaser = mtype === 'laser';
+
+  let paths = []; // array of {segments: [[x,y],…], type}
+  // Convert entities to toolpath segments
+  for (const e of CAD.entities) {
+    if (CAD.layerVis[e.layer] === false) continue;
+    if (e.type === 'line') {
+      paths.push({ segments: [[e.x1,e.y1],[e.x2,e.y2]], type:'line' });
+    } else if (e.type === 'rect') {
+      paths.push({ segments: [[e.x,e.y],[e.x+e.w,e.y],[e.x+e.w,e.y+e.h],[e.x,e.y+e.h],[e.x,e.y]], type:'rect' });
+    } else if (e.type === 'circle') {
+      const segs = [];
+      const steps = Math.max(36, Math.round(e.r * 4));
+      for (let i=0; i<=steps; i++) {
+        const a = (i/steps)*2*Math.PI;
+        segs.push([e.cx + e.r*Math.cos(a), e.cy + e.r*Math.sin(a)]);
+      }
+      paths.push({ segments: segs, type:'circle' });
+    } else if (e.type === 'arc') {
+      const segs = [];
+      let sa = e.startAngle, ea = e.endAngle;
+      if (ea < sa) ea += 2*Math.PI;
+      const steps = Math.max(12, Math.round(e.r * Math.abs(ea-sa) * 2));
+      for (let i=0; i<=steps; i++) {
+        const a = sa + (ea-sa)*(i/steps);
+        segs.push([e.cx + e.r*Math.cos(a), e.cy + e.r*Math.sin(a)]);
+      }
+      paths.push({ segments: segs, type:'arc' });
+    } else if (e.type === 'polyline' || e.type === 'lwpolyline') {
+      const pts = (e.points||[]).map(p=>[p[0],p[1]]);
+      if (e.closed && pts.length) pts.push(pts[0]);
+      if (pts.length >= 2) paths.push({ segments: pts, type:'polyline' });
+    }
+  }
+
+  if (!paths.length) { showNotif('warn','No Geometry','No drawable entities found'); return; }
+
+  // Build G-Code
+  let gc = '';
+  gc += `; SheetForge G-Code Export\n`;
+  gc += `; Machine: ${document.getElementById('gc-machine').options[document.getElementById('gc-machine').selectedIndex].text}\n`;
+  gc += `; Generated: ${new Date().toISOString()}\n`;
+  gc += `; Entities: ${CAD.entities.length}\n\n`;
+  gc += units === 'mm' ? 'G21 ; mm\n' : 'G20 ; inches\n';
+  gc += 'G90 ; absolute\n';
+  gc += 'G17 ; XY plane\n';
+  if (!isLaser) gc += `G0 Z${safeZ.toFixed(3)} ; safe height\n`;
+  gc += 'G0 X0 Y0 ; home\n\n';
+
+  let totalDist = 0;
+  let moves = 0;
+
+  for (const path of paths) {
+    const pts = path.segments;
+    if (!pts.length) continue;
+    const [x0,y0] = pts[0];
+    gc += `; --- ${path.type} ---\n`;
+    gc += `G0 X${x0.toFixed(3)} Y${y0.toFixed(3)}\n`;
+    if (isLaser) {
+      gc += `M3 S1000 ; laser on\n`;
+    } else {
+      gc += `G1 Z${cutZ.toFixed(3)} F${plunge.toFixed(0)} ; plunge\n`;
+    }
+    for (let i=1; i<pts.length; i++) {
+      const [x,y] = pts[i];
+      const [px,py] = pts[i-1];
+      totalDist += Math.hypot(x-px, y-py);
+      gc += `G1 X${x.toFixed(3)} Y${y.toFixed(3)} F${feed.toFixed(0)}\n`;
+      moves++;
+    }
+    if (isLaser) {
+      gc += `M5 ; laser off\n`;
+    } else {
+      gc += `G0 Z${safeZ.toFixed(3)} ; retract\n`;
+    }
+    gc += '\n';
+  }
+
+  gc += 'G0 X0 Y0 ; return home\n';
+  if (!isLaser) gc += `G0 Z${(safeZ*3).toFixed(3)} ; park\n`;
+  gc += 'M30 ; end\n';
+
+  gcodeData = { code: gc, paths };
+
+  document.getElementById('gc-code-preview').value = gc;
+  document.getElementById('gc-download-btn').style.display = '';
+  document.getElementById('gc-sim-btn').style.display = '';
+  document.getElementById('gc-stats').innerHTML =
+    `<div>Paths: <b>${paths.length}</b></div>` +
+    `<div>Moves: <b>${moves}</b></div>` +
+    `<div>Cut dist: <b>${totalDist.toFixed(1)} mm</b></div>` +
+    `<div>Est. time: <b>${(totalDist/feed + paths.length*(safeZ/plunge+safeZ/3000)).toFixed(1)} min</b></div>`;
+
+  cadGcSimDraw([]);
+  showNotif('success','G-Code Ready',`${moves} moves generated`);
+}
+
+function cadDownloadGCode() {
+  if (!gcodeData) return;
+  const blob = new Blob([gcodeData.code], {type:'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'sheetforge_toolpath.nc';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  showNotif('success','Downloaded','sheetforge_toolpath.nc saved');
+}
+
+function cadGcSimDraw(highlightPts) {
+  const cv = document.getElementById('gc-sim-canvas');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const W = cv.clientWidth || 640, H = cv.clientHeight || 420;
+  cv.width = W; cv.height = H;
+  ctx.fillStyle = '#0a0c0f';
+  ctx.fillRect(0,0,W,H);
+
+  // Determine bounds from entities
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  const allPts = gcodeData ? gcodeData.paths.flatMap(p=>p.segments) :
+    CAD.entities.flatMap(e => {
+      const bb = cadEntityBBox(e);
+      return bb ? [[bb.minX,bb.minY],[bb.maxX,bb.maxY]] : [];
+    });
+  for (const [x,y] of allPts) { minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y); }
+  if (!isFinite(minX)) return;
+  const margin=24;
+  const sx=(W-margin*2)/(maxX-minX||1), sy=(H-margin*2)/(maxY-minY||1);
+  const sc=Math.min(sx,sy);
+  const offX=margin+(W-margin*2-(maxX-minX)*sc)/2 - minX*sc;
+  const offY=margin+(H-margin*2-(maxY-minY)*sc)/2 - minY*sc;
+  const toS = (x,y) => ({ x: offX+x*sc, y: H-offY-y*sc });
+
+  // Draw grid
+  ctx.strokeStyle='rgba(255,255,255,0.04)';ctx.lineWidth=0.5;
+  for(let gx=Math.floor(minX/10)*10;gx<=maxX+10;gx+=10){const s=toS(gx,0);ctx.beginPath();ctx.moveTo(s.x,0);ctx.lineTo(s.x,H);ctx.stroke();}
+  for(let gy=Math.floor(minY/10)*10;gy<=maxY+10;gy+=10){const s=toS(0,gy);ctx.beginPath();ctx.moveTo(0,s.y);ctx.lineTo(W,s.y);ctx.stroke();}
+
+  // Draw all toolpaths in dim color
+  if (gcodeData) {
+    for (const path of gcodeData.paths) {
+      const pts = path.segments;
+      if (pts.length < 2) continue;
+      ctx.strokeStyle='rgba(0,212,160,0.3)';ctx.lineWidth=1;ctx.setLineDash([]);
+      ctx.beginPath();
+      const s0=toS(pts[0][0],pts[0][1]);ctx.moveTo(s0.x,s0.y);
+      for(let i=1;i<pts.length;i++){const s=toS(pts[i][0],pts[i][1]);ctx.lineTo(s.x,s.y);}
+      ctx.stroke();
+    }
+  } else {
+    // Draw DXF entities
+    for (const e of CAD.entities) {
+      if (CAD.layerVis[e.layer]===false) continue;
+      ctx.strokeStyle='rgba(0,170,255,0.4)';ctx.lineWidth=1;ctx.setLineDash([]);
+      if (e.type==='line'){const p1=toS(e.x1,e.y1),p2=toS(e.x2,e.y2);ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();}
+      else if (e.type==='rect'){const p1=toS(e.x,e.y),p2=toS(e.x+e.w,e.y+e.h);ctx.strokeRect(Math.min(p1.x,p2.x),Math.min(p1.y,p2.y),Math.abs(p2.x-p1.x),Math.abs(p2.y-p1.y));}
+      else if (e.type==='circle'){const c=toS(e.cx,e.cy);ctx.beginPath();ctx.arc(c.x,c.y,e.r*sc,0,2*Math.PI);ctx.stroke();}
+    }
+  }
+
+  // Draw highlighted (simulated so far) in bright color
+  if (highlightPts.length >= 2) {
+    ctx.strokeStyle='#00d4a0';ctx.lineWidth=2;ctx.setLineDash([]);
+    ctx.beginPath();
+    const s0=toS(highlightPts[0][0],highlightPts[0][1]);ctx.moveTo(s0.x,s0.y);
+    for(let i=1;i<highlightPts.length;i++){const s=toS(highlightPts[i][0],highlightPts[i][1]);ctx.lineTo(s.x,s.y);}
+    ctx.stroke();
+    // Tool head marker
+    const last=highlightPts[highlightPts.length-1];
+    const ls=toS(last[0],last[1]);
+    ctx.fillStyle='#ffcc00';ctx.beginPath();ctx.arc(ls.x,ls.y,5,0,2*Math.PI);ctx.fill();
+  }
+
+  // Origin marker
+  const o=toS(0,0);
+  ctx.strokeStyle='rgba(255,80,80,0.5)';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(o.x-8,o.y);ctx.lineTo(o.x+8,o.y);ctx.stroke();
+  ctx.strokeStyle='rgba(80,200,80,0.5)';ctx.beginPath();ctx.moveTo(o.x,o.y-8);ctx.lineTo(o.x,o.y+8);ctx.stroke();
+}
+
+function cadSimulateGCode() {
+  if (!gcodeData) return;
+  cadStopSimulation();
+  document.getElementById('gc-sim-btn').style.display='none';
+  document.getElementById('gc-sim-stop').style.display='';
+
+  // Flatten all path segments into one sequence for animation
+  const allPts = [];
+  for (const path of gcodeData.paths) {
+    for (const pt of path.segments) allPts.push(pt);
+  }
+  if (allPts.length < 2) return;
+
+  let idx = 0;
+  const drawn = [];
+  const STEP = Math.max(1, Math.floor(allPts.length/200)); // speed
+
+  gcSimTimer = setInterval(() => {
+    idx = Math.min(idx+STEP, allPts.length-1);
+    drawn.push(allPts[idx]);
+    cadGcSimDraw(drawn);
+    if (idx >= allPts.length-1) { cadStopSimulation(); }
+  }, 30);
+}
+
+function cadStopSimulation() {
+  if (gcSimTimer) { clearInterval(gcSimTimer); gcSimTimer=null; }
+  document.getElementById('gc-sim-btn').style.display='';
+  document.getElementById('gc-sim-stop').style.display='none';
+}
+
 // ─ Legacy shims ───────────────────────────────────────────────────────
 
 function initDwgCanvas() { setTimeout(()=>initCadEditor(),50); }
@@ -4574,6 +5020,9 @@ function showNotif(type, title, sub) {
 // ================================================================
 // MODALS
 // ================================================================
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+}
 function closeModal(id) {
   document.getElementById(id).classList.remove('open');
 }
