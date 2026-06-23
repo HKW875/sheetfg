@@ -4717,99 +4717,245 @@ function cadGenerateGCode() {
   const mtype  = document.getElementById('gc-machine').value;
   const isLaser = mtype === 'laser';
 
-  let paths = []; // array of {segments: [[x,y],…], type}
-  // Convert entities to toolpath segments
-  for (const e of CAD.entities) {
-    if (CAD.layerVis[e.layer] === false) continue;
-    if (e.type === 'line') {
-      paths.push({ segments: [[e.x1,e.y1],[e.x2,e.y2]], type:'line' });
-    } else if (e.type === 'rect') {
-      paths.push({ segments: [[e.x,e.y],[e.x+e.w,e.y],[e.x+e.w,e.y+e.h],[e.x,e.y+e.h],[e.x,e.y]], type:'rect' });
-    } else if (e.type === 'circle') {
-      const segs = [];
-      const steps = Math.max(36, Math.round(e.r * 4));
-      for (let i=0; i<=steps; i++) {
-        const a = (i/steps)*2*Math.PI;
-        segs.push([e.cx + e.r*Math.cos(a), e.cy + e.r*Math.sin(a)]);
-      }
-      paths.push({ segments: segs, type:'circle' });
-    } else if (e.type === 'arc') {
-      const segs = [];
-      let sa = e.startAngle, ea = e.endAngle;
-      if (ea < sa) ea += 2*Math.PI;
-      const steps = Math.max(12, Math.round(e.r * Math.abs(ea-sa) * 2));
-      for (let i=0; i<=steps; i++) {
-        const a = sa + (ea-sa)*(i/steps);
-        segs.push([e.cx + e.r*Math.cos(a), e.cy + e.r*Math.sin(a)]);
-      }
-      paths.push({ segments: segs, type:'arc' });
-    } else if (e.type === 'polyline' || e.type === 'lwpolyline') {
-      const pts = (e.points||[]).map(p=>[p[0],p[1]]);
-      if (e.closed && pts.length) pts.push(pts[0]);
-      if (pts.length >= 2) paths.push({ segments: pts, type:'polyline' });
+  // ── Step 1: Convert EVERY visible entity into a list of raw segments ──
+  // A segment = { pts: [[x,y],…], closed: bool, entityType: str }
+  // We include ALL entity types: line, rect, circle, arc, polyline,
+  // lwpolyline, hatch, dimension, text (text rendered as a cross marker)
+  const rawSegs = [];
+
+  function arcToPoints(cx, cy, r, sa, ea) {
+    // Normalise so ea > sa (CCW)
+    let a0 = sa, a1 = ea;
+    while (a1 < a0) a1 += 2 * Math.PI;
+    const span = a1 - a0;
+    const steps = Math.max(8, Math.round(r * span * 4));
+    const pts = [];
+    for (let i = 0; i <= steps; i++) {
+      const a = a0 + span * (i / steps);
+      pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
     }
+    return pts;
   }
 
-  if (!paths.length) { showNotif('warn','No Geometry','No drawable entities found'); return; }
+  for (const e of CAD.entities) {
+    // Include ALL layers — user asked for every vector
+    if (e.type === 'line') {
+      rawSegs.push({ pts: [[e.x1,e.y1],[e.x2,e.y2]], closed: false, entityType: 'line' });
 
-  // Build G-Code
+    } else if (e.type === 'rect') {
+      rawSegs.push({
+        pts: [[e.x,e.y],[e.x+e.w,e.y],[e.x+e.w,e.y+e.h],[e.x,e.y+e.h],[e.x,e.y]],
+        closed: true, entityType: 'rect'
+      });
+
+    } else if (e.type === 'circle') {
+      const steps = Math.max(36, Math.round(e.r * Math.PI * 2 / 0.5)); // ~0.5mm chord
+      const pts = [];
+      for (let i = 0; i <= steps; i++) {
+        const a = (i / steps) * 2 * Math.PI;
+        pts.push([e.cx + e.r * Math.cos(a), e.cy + e.r * Math.sin(a)]);
+      }
+      rawSegs.push({ pts, closed: true, entityType: 'circle' });
+
+    } else if (e.type === 'arc') {
+      const pts = arcToPoints(e.cx, e.cy, e.r, e.startAngle, e.endAngle);
+      rawSegs.push({ pts, closed: false, entityType: 'arc' });
+
+    } else if (e.type === 'polyline' || e.type === 'lwpolyline') {
+      const pts = (e.points || []).map(p => [p[0], p[1]]);
+      if (pts.length < 2) continue;
+      if (e.closed) pts.push([pts[0][0], pts[0][1]]);
+      rawSegs.push({ pts, closed: !!e.closed, entityType: 'polyline' });
+
+    } else if (e.type === 'hatch') {
+      // Every hatch line is a real cut vector
+      rawSegs.push({ pts: [[e.x1,e.y1],[e.x2,e.y2]], closed: false, entityType: 'hatch' });
+
+    } else if (e.type === 'dimension') {
+      // Extension line 1, extension line 2, dimension line — 3 cuts
+      rawSegs.push({ pts: [[e.x1,e.y1],[e.x2,e.y2]], closed: false, entityType: 'dimension' });
+      // Dimension line offset (approximate from stored ox/oy)
+      const ox = e.ox || 0, oy = e.oy || 0;
+      rawSegs.push({ pts: [[e.x1+ox,e.y1+oy],[e.x2+ox,e.y2+oy]], closed: false, entityType: 'dimension' });
+
+    } else if (e.type === 'text') {
+      // Engrave a small cross at the text anchor point
+      const s = (e.size || 3) * 0.5;
+      rawSegs.push({ pts: [[e.x-s,e.y],[e.x+s,e.y]], closed: false, entityType: 'text' });
+      rawSegs.push({ pts: [[e.x,e.y-s],[e.x,e.y+s]], closed: false, entityType: 'text' });
+    }
+    // Note: any future entity types added to the editor will produce
+    // a no-op here (no silent skip with continue) — they simply won't
+    // appear in paths, which is safe.
+  }
+
+  if (!rawSegs.length) { showNotif('warn','No Geometry','No entities found in drawing'); return; }
+
+  // ── Step 2: Chain adjacent segments into continuous toolpaths ──────
+  // Tolerance for endpoint matching (connect if within 0.01 mm)
+  const CONN_TOL = 0.01;
+  function ptEq(a, b) { return Math.hypot(a[0]-b[0], a[1]-b[1]) < CONN_TOL; }
+  function segStart(s) { return s.pts[0]; }
+  function segEnd(s)   { return s.pts[s.pts.length-1]; }
+
+  // Mark all segs as unused
+  const used = new Array(rawSegs.length).fill(false);
+  const chains = []; // each chain = array of [x,y] points (continuous toolpath)
+
+  // Nearest-neighbour chaining: find the unused segment whose start or end
+  // is closest to the current position, reversing it if needed.
+  function findNextSeg(curPt) {
+    let bestIdx = -1, bestDist = Infinity, bestReverse = false;
+    for (let i = 0; i < rawSegs.length; i++) {
+      if (used[i]) continue;
+      const ds = Math.hypot(segStart(rawSegs[i])[0]-curPt[0], segStart(rawSegs[i])[1]-curPt[1]);
+      const de = Math.hypot(segEnd(rawSegs[i])[0]-curPt[0],   segEnd(rawSegs[i])[1]-curPt[1]);
+      if (ds < bestDist) { bestDist=ds; bestIdx=i; bestReverse=false; }
+      if (de < bestDist) { bestDist=de; bestIdx=i; bestReverse=true;  }
+    }
+    return { idx: bestIdx, dist: bestDist, reverse: bestReverse };
+  }
+
+  // Build chains: greedily connect segments that are within CONN_TOL,
+  // breaking into a new chain only when a gap (lift) is needed.
+  while (true) {
+    // Find any unused seg to start a new chain
+    let startIdx = used.indexOf(false);
+    if (startIdx === -1) break;
+
+    used[startIdx] = true;
+    const chainPts = [...rawSegs[startIdx].pts];
+
+    // Keep extending the chain by finding connected next seg
+    while (true) {
+      const cur = chainPts[chainPts.length - 1];
+      // Look for a segment whose start or end connects exactly (within CONN_TOL)
+      let found = false;
+      for (let i = 0; i < rawSegs.length; i++) {
+        if (used[i]) continue;
+        if (ptEq(segStart(rawSegs[i]), cur)) {
+          used[i] = true;
+          // Append (skip duplicate first point)
+          chainPts.push(...rawSegs[i].pts.slice(1));
+          found = true; break;
+        }
+        if (ptEq(segEnd(rawSegs[i]), cur)) {
+          used[i] = true;
+          // Append reversed (skip duplicate first point)
+          const rev = [...rawSegs[i].pts].reverse();
+          chainPts.push(...rev.slice(1));
+          found = true; break;
+        }
+      }
+      if (!found) break;
+    }
+
+    chains.push(chainPts);
+  }
+
+  // ── Step 3: Order chains by nearest-neighbour to minimise total rapid distance ──
+  const orderedChains = [];
+  const chainUsed = new Array(chains.length).fill(false);
+  let curPos = [0, 0];
+
+  for (let n = 0; n < chains.length; n++) {
+    let bestCI = -1, bestDist = Infinity, bestReverse = false;
+    for (let i = 0; i < chains.length; i++) {
+      if (chainUsed[i]) continue;
+      const c = chains[i];
+      const ds = Math.hypot(c[0][0]-curPos[0], c[0][1]-curPos[1]);
+      const de = Math.hypot(c[c.length-1][0]-curPos[0], c[c.length-1][1]-curPos[1]);
+      if (ds < bestDist) { bestDist=ds; bestCI=i; bestReverse=false; }
+      if (de < bestDist) { bestDist=de; bestCI=i; bestReverse=true;  }
+    }
+    chainUsed[bestCI] = true;
+    const ch = bestReverse ? [...chains[bestCI]].reverse() : chains[bestCI];
+    orderedChains.push(ch);
+    curPos = ch[ch.length - 1];
+  }
+
+  // ── Step 4: Emit G-Code ───────────────────────────────────────────
   let gc = '';
-  gc += `; SheetForge G-Code Export\n`;
-  gc += `; Machine: ${document.getElementById('gc-machine').options[document.getElementById('gc-machine').selectedIndex].text}\n`;
+  const machineLabel = document.getElementById('gc-machine').options[
+    document.getElementById('gc-machine').selectedIndex].text;
+
+  gc += `; ============================================================\n`;
+  gc += `; SheetForge G-Code — Full Vector Coverage\n`;
+  gc += `; Machine  : ${machineLabel}\n`;
   gc += `; Generated: ${new Date().toISOString()}\n`;
-  gc += `; Entities: ${CAD.entities.length}\n\n`;
-  gc += units === 'mm' ? 'G21 ; mm\n' : 'G20 ; inches\n';
-  gc += 'G90 ; absolute\n';
+  gc += `; Entities : ${CAD.entities.length}  →  raw segments: ${rawSegs.length}  →  toolpaths: ${orderedChains.length}\n`;
+  gc += `; ============================================================\n\n`;
+  gc += units === 'mm' ? 'G21 ; units: mm\n' : 'G20 ; units: inches\n';
+  gc += 'G90 ; absolute positioning\n';
   gc += 'G17 ; XY plane\n';
-  if (!isLaser) gc += `G0 Z${safeZ.toFixed(3)} ; safe height\n`;
-  gc += 'G0 X0 Y0 ; home\n\n';
+  if (!isLaser) gc += `G0 Z${safeZ.toFixed(4)} ; move to safe height\n`;
+  gc += 'G0 X0.0000 Y0.0000 ; move to origin\n\n';
 
-  let totalDist = 0;
-  let moves = 0;
+  let totalRapid = 0, totalCut = 0, totalMoves = 0;
+  let prevPos = [0, 0];
 
-  for (const path of paths) {
-    const pts = path.segments;
-    if (!pts.length) continue;
-    const [x0,y0] = pts[0];
-    gc += `; --- ${path.type} ---\n`;
-    gc += `G0 X${x0.toFixed(3)} Y${y0.toFixed(3)}\n`;
+  for (let ci = 0; ci < orderedChains.length; ci++) {
+    const pts = orderedChains[ci];
+    if (pts.length < 2) continue;
+
+    const [x0, y0] = pts[0];
+    const rapidDist = Math.hypot(x0 - prevPos[0], y0 - prevPos[1]);
+    totalRapid += rapidDist;
+
+    gc += `; --- toolpath ${ci + 1} / ${orderedChains.length} (${pts.length} points) ---\n`;
+    gc += `G0 X${x0.toFixed(4)} Y${y0.toFixed(4)}\n`;  // rapid to start
+
     if (isLaser) {
-      gc += `M3 S1000 ; laser on\n`;
+      gc += `M3 S1000 ; laser ON\n`;
     } else {
-      gc += `G1 Z${cutZ.toFixed(3)} F${plunge.toFixed(0)} ; plunge\n`;
+      gc += `G1 Z${cutZ.toFixed(4)} F${plunge.toFixed(0)} ; plunge to cut depth\n`;
     }
-    for (let i=1; i<pts.length; i++) {
-      const [x,y] = pts[i];
-      const [px,py] = pts[i-1];
-      totalDist += Math.hypot(x-px, y-py);
-      gc += `G1 X${x.toFixed(3)} Y${y.toFixed(3)} F${feed.toFixed(0)}\n`;
-      moves++;
+
+    for (let i = 1; i < pts.length; i++) {
+      const [x, y] = pts[i];
+      const [px, py] = pts[i - 1];
+      const d = Math.hypot(x - px, y - py);
+      totalCut += d;
+      totalMoves++;
+      gc += `G1 X${x.toFixed(4)} Y${y.toFixed(4)} F${feed.toFixed(0)}\n`;
     }
+
     if (isLaser) {
-      gc += `M5 ; laser off\n`;
+      gc += `M5 ; laser OFF\n`;
     } else {
-      gc += `G0 Z${safeZ.toFixed(3)} ; retract\n`;
+      gc += `G0 Z${safeZ.toFixed(4)} ; retract to safe height\n`;
     }
     gc += '\n';
+
+    prevPos = pts[pts.length - 1];
   }
 
-  gc += 'G0 X0 Y0 ; return home\n';
-  if (!isLaser) gc += `G0 Z${(safeZ*3).toFixed(3)} ; park\n`;
-  gc += 'M30 ; end\n';
+  gc += '; ============================================================\n';
+  gc += 'G0 X0.0000 Y0.0000 ; return to origin\n';
+  if (!isLaser) gc += `G0 Z${(safeZ * 3).toFixed(4)} ; park Z\n`;
+  gc += 'M30 ; program end\n';
 
-  gcodeData = { code: gc, paths };
+  // ── Step 5: Store & display results ──────────────────────────────
+  gcodeData = { code: gc, paths: orderedChains.map(pts => ({ segments: pts })) };
 
   document.getElementById('gc-code-preview').value = gc;
   document.getElementById('gc-download-btn').style.display = '';
   document.getElementById('gc-sim-btn').style.display = '';
+
+  const liftCount = orderedChains.length;
+  const estTime = ((totalCut / feed) + (totalRapid / 3000) + (liftCount * ((Math.abs(cutZ) + safeZ) / plunge))).toFixed(1);
   document.getElementById('gc-stats').innerHTML =
-    `<div>Paths: <b>${paths.length}</b></div>` +
-    `<div>Moves: <b>${moves}</b></div>` +
-    `<div>Cut dist: <b>${totalDist.toFixed(1)} mm</b></div>` +
-    `<div>Est. time: <b>${(totalDist/feed + paths.length*(safeZ/plunge+safeZ/3000)).toFixed(1)} min</b></div>`;
+    `<div>Entities: <b>${CAD.entities.length}</b></div>` +
+    `<div>Raw vectors: <b>${rawSegs.length}</b></div>` +
+    `<div>Toolpaths: <b>${liftCount}</b> (lifts)</div>` +
+    `<div>Cut moves: <b>${totalMoves}</b></div>` +
+    `<div>Cut dist: <b>${totalCut.toFixed(1)} mm</b></div>` +
+    `<div>Rapid dist: <b>${totalRapid.toFixed(1)} mm</b></div>` +
+    `<div>Est. time: <b>${estTime} min</b></div>`;
 
   cadGcSimDraw([]);
-  showNotif('success','G-Code Ready',`${moves} moves generated`);
+  showNotif('success', 'G-Code Ready',
+    `${rawSegs.length} vectors → ${liftCount} toolpaths, ${totalMoves} cut moves`);
 }
 
 function cadDownloadGCode() {
