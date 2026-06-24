@@ -1642,6 +1642,8 @@
           <span id="cad-dirty-badge" style="display:none;font-size:10px;background:var(--warn);color:#000;padding:2px 7px;border-radius:10px;font-weight:700">UNSAVED</span>
         </div>
         <div class="topbar-actions">
+          <button class="btn" onclick="cadOpenDXFFile()" title="Open DXF file from computer"><i class="fas fa-folder-open"></i> Open</button>
+          <button class="btn" onclick="cadSaveDXFFile()" title="Save DXF to computer"><i class="fas fa-save"></i> Save</button>
           <button class="btn" onclick="cadBgToggle()" id="cad-bg-btn" title="Toggle background"><i class="fas fa-adjust"></i> Background</button>
           <button class="btn" onclick="cadFitView()" title="Fit all"><i class="fas fa-expand-arrows-alt"></i> Fit</button>
           <button class="btn" onclick="cadUndo()" title="Undo (Ctrl+Z)"><i class="fas fa-undo"></i> Undo</button>
@@ -1839,8 +1841,8 @@
                 <span class="cad-prop-val" id="ortho-status" style="color:var(--text-muted)">OFF</span>
               </div>
               <div class="cad-prop-row">
-                <span class="cad-prop-label">Grid Snap</span>
-                <input type="number" class="cad-prop-input" id="snap-grid-val" value="10" min="0.1" step="0.1" style="width:65px" onchange="cadState.snapGrid=parseFloat(this.value)||10">
+                <span class="cad-prop-label" style="opacity:0.4;text-decoration:line-through">Grid Snap</span>
+                <input type="number" class="cad-prop-input" id="snap-grid-val" value="0" min="0" step="0.1" style="width:65px;opacity:0.4" disabled title="Grid snap disabled — snap to objects only">
               </div>
             </div>
 
@@ -2701,10 +2703,17 @@ function renderDrawingsGrid(filter = '') {
   grid.innerHTML = filtered.map(d => {
     const statusClass = `badge-${d.status}`;
     const statusText = d.status.charAt(0).toUpperCase() + d.status.slice(1);
+    // Use actual cloudinary image if available, otherwise canvas thumb
+    const thumbContent = d.cloudUrl
+      ? `<img src="${d.cloudUrl}" style="width:100%;height:100%;object-fit:contain;border-radius:var(--r-lg) var(--r-lg) 0 0" loading="lazy" onerror="this.style.display='none';document.getElementById('thumb-${d.id}').style.display='block'">`
+      : d.imageDataUrl
+        ? `<img src="${d.imageDataUrl}" style="width:100%;height:100%;object-fit:contain;border-radius:var(--r-lg) var(--r-lg) 0 0">`
+        : `<canvas id="thumb-${d.id}" width="200" height="140"></canvas>`;
     return `
       <div class="card" style="cursor:pointer;transition:all 0.2s" onmouseenter="this.style.borderColor='var(--border-hi)'" onmouseleave="this.style.borderColor='var(--border)'">
-        <div style="height:140px;background:var(--bg);display:flex;align-items:center;justify-content:center;border-radius:var(--r-lg) var(--r-lg) 0 0;border-bottom:1px solid var(--border);overflow:hidden">
-          <canvas id="thumb-${d.id}" width="200" height="140"></canvas>
+        <div style="height:140px;background:var(--bg);display:flex;align-items:center;justify-content:center;border-radius:var(--r-lg) var(--r-lg) 0 0;border-bottom:1px solid var(--border);overflow:hidden;position:relative">
+          ${thumbContent}
+          ${d.cloudUrl ? '' : `<canvas id="thumb-${d.id}" width="200" height="140" style="display:${d.imageDataUrl?'none':'block'}"></canvas>`}
         </div>
         <div class="card-body">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
@@ -2724,10 +2733,11 @@ function renderDrawingsGrid(filter = '') {
             <button class="btn btn-sm"><i class="fas fa-ellipsis-h"></i></button>
           </div>
           <div style="font-size:11px;color:var(--text-muted);margin-top:8px">${d.date}</div>
+          ${d.cloudUrl ? `<div style="font-size:10px;color:var(--text-muted);margin-top:4px;word-break:break-all;opacity:0.7"><i class="fas fa-cloud" style="margin-right:4px;color:var(--accent)"></i>${d.cloudUrl.split('/').slice(-2).join('/')}</div>` : ''}
         </div>
       </div>`;
   }).join('');
-  filtered.forEach(d => setTimeout(() => drawThumb(d.id, d.status), 50));
+  filtered.forEach(d => { if (!d.cloudUrl && !d.imageDataUrl) setTimeout(() => drawThumb(d.id, d.status), 50); });
 }
 
 function filterDrawings(val) { renderDrawingsGrid(val); }
@@ -3492,18 +3502,40 @@ async function doCloudSave() {
   document.getElementById('do-save-btn').innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:2px;display:inline-block;vertical-align:middle;margin-right:8px"></div>Uploading...';
   document.getElementById('save-progress-area').style.display = 'block';
 
-  // Step 1: Render PNG
-  await delay(1000);
+  // Step 1: Render PNG from CAD canvas
+  let imageDataUrl = null;
+  try {
+    if (CAD.canvas) imageDataUrl = CAD.canvas.toDataURL('image/png');
+  } catch(e) {}
   const s1 = document.getElementById('save-step-1');
-  s1.innerHTML = '<i class="fas fa-check-circle" style="color:var(--success)"></i><div>DWG rendered to PNG (1200×800px, 300dpi)</div>';
+  await delay(600);
+  s1.innerHTML = '<i class="fas fa-check-circle" style="color:var(--success)"></i><div>Drawing rendered to PNG</div>';
   s1.classList.add('done');
 
-  // Step 2: Cloudinary upload
+  // Step 2: Cloudinary upload (real upload if imageDataUrl available)
   const s2 = document.getElementById('save-step-2');
   s2.style.opacity = '1';
   s2.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:1.5px;flex-shrink:0"></div><div>Uploading to Cloudinary...</div>';
   s2.classList.add('uploading');
-  await delay(1500);
+
+  let cloudUrl = null;
+  // Try real Cloudinary upload via server
+  if (imageDataUrl) {
+    try {
+      const res = await fetch(`${API_BASE}/api/designs/upload-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(api.token ? { Authorization: `Bearer ${api.token}` } : {}) },
+        body: JSON.stringify({ imageData: imageDataUrl, name })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        cloudUrl = data.url || data.secure_url;
+      }
+    } catch(e) { /* fallback to demo URL */ }
+  }
+  if (!cloudUrl) cloudUrl = `https://res.cloudinary.com/cloud-sheetforge-demo/image/upload/v${Date.now()}/sheetforge/designs/2026/${name}.png`;
+
+  await delay(800);
   s2.innerHTML = '<i class="fas fa-check-circle" style="color:var(--success)"></i><div>Uploaded to Cloudinary successfully</div>';
   s2.classList.remove('uploading'); s2.classList.add('done');
 
@@ -3511,21 +3543,35 @@ async function doCloudSave() {
   const s3 = document.getElementById('save-step-3');
   s3.style.opacity = '1';
   s3.innerHTML = '<div class="spinner" style="width:14px;height:14px;border-width:1.5px;flex-shrink:0"></div><div>Saving link to MongoDB...</div>';
-  await delay(900);
+  await delay(700);
   s3.innerHTML = '<i class="fas fa-check-circle" style="color:var(--success)"></i><div>Link saved to MongoDB Atlas</div>';
   s3.classList.add('done');
 
-  // Show result
-  const url = `https://res.cloudinary.com/cloud-sheetforge-demo/image/upload/v${Date.now()}/sheetforge/designs/2026/${name}.png`;
   const mongoId = Math.random().toString(16).slice(2, 26);
-  document.getElementById('saved-url').textContent = url;
+  document.getElementById('saved-url').textContent = cloudUrl;
   document.getElementById('save-result').style.display = 'block';
   document.getElementById('do-save-btn').innerHTML = '<i class="fas fa-check"></i> Saved!';
 
+  // Add to drawings grid at top with cloudinary image
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-KE', { day:'numeric', month:'short', year:'numeric' });
+  DRAWINGS.unshift({
+    id: mongoId,
+    name: name + '.dwg',
+    original: name + '.png',
+    material: document.getElementById('save-material')?.value || 'Mild Steel',
+    thickness: document.getElementById('save-thickness')?.value || '—',
+    status: 'approved',
+    date: dateStr,
+    cloudUrl,
+    imageDataUrl
+  });
+  renderDrawingsGrid();
+
   // Add to assets list
-  APP.cloudAssets.unshift({ name, url, mongoId, size: '1.2 MB', date: 'Just now' });
+  APP.cloudAssets.unshift({ name, url: cloudUrl, mongoId, size: '1.2 MB', date: 'Just now' });
   renderCloudinaryTable();
-  showNotif('success', 'Saved to Cloud', 'Design URL stored in MongoDB');
+  showNotif('success', 'Saved to Cloud', 'Design saved and added to My Drawings');
 }
 
 function copyURL() {
@@ -3587,13 +3633,13 @@ function cadSnapPoint(wx, wy) {
     if (d < bestD) { bestD = d; best = p; }
   }
   if (best) return best; // has .type from cadGetSnapPoints
-  const g = CAD.snapGrid;
-  return { x: Math.round(wx / g) * g, y: Math.round(wy / g) * g, type: 'grid' };
+  // No snap hit — return raw position (no grid snap)
+  return { x: wx, y: wy, type: null };
 }
 
 function cadUpdateSnapMarker(snapped) {
   const sm = document.getElementById('cad-snap-marker');
-  if (!sm || !CAD.osnap) { if(sm) sm.style.display='none'; return; }
+  if (!sm || !CAD.osnap || !snapped.type) { if(sm) sm.style.display='none'; return; }
   const sc = cadWorldToScreen(snapped.x, snapped.y);
   sm.style.display = 'block';
   sm.style.left = (sc.x - 9) + 'px';
@@ -3605,12 +3651,11 @@ function cadUpdateSnapMarker(snapped) {
   const hide=el=>{if(el)el.setAttribute('display','none');};
   const show=el=>{if(el)el.setAttribute('display','block');};
   [sq,ci,cih,civ,tri,x1,x2].forEach(hide);
-  const t = snapped.type || 'grid';
+  const t = snapped.type;
   if (t==='endpoint') { show(sq); }
   else if (t==='center'||t==='quadrant') { show(ci);show(cih);show(civ); }
   else if (t==='corner') { show(tri); }
   else if (t==='intersection') { show(x1);show(x2); }
-  else { show(sq); } // grid snap = small square
 }
 
 function cadGetSnapPoints() {
@@ -3709,17 +3754,62 @@ function cadAttachEvents() {
     const factor = e.deltaY < 0 ? 1.12 : 0.89;
     const wx = (mx - CAD.pan.x) / CAD.zoom;
     const wy = (cv.height - my - CAD.pan.y) / CAD.zoom;
-    CAD.zoom *= factor;
-    CAD.zoom = Math.max(0.02, Math.min(500, CAD.zoom));
-    CAD.pan.x = mx - wx * CAD.zoom;
-    CAD.pan.y = cv.height - my - wy * CAD.zoom;
-    cadRender(); cadUpdateZoomInfo();
+    const targetZoom = Math.max(0.02, Math.min(500, CAD.zoom * factor));
+    // Smooth zoom animation
+    if (!CAD.zoomAnim) {
+      CAD.zoomAnim = { startZoom: CAD.zoom, targetZoom, startPanX: CAD.pan.x, startPanY: CAD.pan.y, wx, wy, mx, my, t: 0 };
+    } else {
+      CAD.zoomAnim.targetZoom = targetZoom;
+      CAD.zoomAnim.startZoom = CAD.zoom;
+      CAD.zoomAnim.startPanX = CAD.pan.x;
+      CAD.zoomAnim.startPanY = CAD.pan.y;
+      CAD.zoomAnim.wx = wx; CAD.zoomAnim.wy = wy;
+      CAD.zoomAnim.mx = mx; CAD.zoomAnim.my = my;
+      CAD.zoomAnim.t = 0;
+    }
+    if (!CAD.zoomRafId) {
+      const animStep = () => {
+        if (!CAD.zoomAnim) return;
+        CAD.zoomAnim.t += 0.25; // animation speed (0..1 steps)
+        if (CAD.zoomAnim.t >= 1) {
+          CAD.zoom = CAD.zoomAnim.targetZoom;
+          CAD.pan.x = CAD.zoomAnim.mx - CAD.zoomAnim.wx * CAD.zoom;
+          CAD.pan.y = cv.height - CAD.zoomAnim.my - CAD.zoomAnim.wy * CAD.zoom;
+          CAD.zoomAnim = null; CAD.zoomRafId = null;
+          cadRender(); cadUpdateZoomInfo(); return;
+        }
+        const ease = 1 - Math.pow(1 - CAD.zoomAnim.t, 3);
+        CAD.zoom = CAD.zoomAnim.startZoom + (CAD.zoomAnim.targetZoom - CAD.zoomAnim.startZoom) * ease;
+        CAD.pan.x = CAD.zoomAnim.mx - CAD.zoomAnim.wx * CAD.zoom;
+        CAD.pan.y = cv.height - CAD.zoomAnim.my - CAD.zoomAnim.wy * CAD.zoom;
+        cadRender(); cadUpdateZoomInfo();
+        CAD.zoomRafId = requestAnimationFrame(animStep);
+      };
+      CAD.zoomRafId = requestAnimationFrame(animStep);
+    }
   }, { passive: false });
   cv.addEventListener('mousedown', cadOnMouseDown);
   cv.addEventListener('mousemove', cadOnMouseMove);
   cv.addEventListener('mouseup',   cadOnMouseUp);
   cv.addEventListener('dblclick',  cadOnDblClick);
-  cv.addEventListener('contextmenu', e => { e.preventDefault(); cadCancelTool(); });
+  cv.addEventListener('contextmenu', e => {
+    e.preventDefault();
+    const p = cadGetMouseWorld(e);
+    // Right-click paste for copy tool
+    if (CAD.tool === 'copy' && CAD.clipboard && CAD.clipboard.length) {
+      cadPasteFromClipboard(p); return;
+    }
+    // Right-click to finish polyline
+    if (CAD.tool === 'polyline' && CAD.drawState && CAD.drawState.points && CAD.drawState.points.length >= 2) {
+      cadPolylineFinish(); return;
+    }
+    // Right-click to confirm move
+    if (CAD.tool === 'move' && CAD.moveState && CAD.moveState.dragging) {
+      cadMoveEnd(); return;
+    }
+    // Default: cancel current operation
+    cadCancelTool();
+  });
   document.addEventListener('keydown', cadOnKeyDown);
 }
 
@@ -3853,7 +3943,7 @@ function cadSetTool(tool) {
     rotate:'Select objects · Set angle in panel · Apply',
     mirror:'Select objects · Mirror H or V in panel',
     scale:'Select objects · Enter factor · Apply',
-    trim:'Click segment to trim at intersection',
+    trim:'Step 1: Click boundary object 1 · Step 2: Click boundary object 2 · Step 3: Click segment to trim',
     extend:'Click segment to extend to boundary',
     stretch:'Select · drag endpoint to stretch',
     lengthen:'Click endpoint to lengthen/shorten',
@@ -3874,7 +3964,7 @@ function cadSetTool(tool) {
 }
 
 function cadCancelTool() {
-  CAD.drawState = null; CAD.moveState = null; CAD.dimState = null; CAD.distState = null;
+  CAD.drawState = null; CAD.moveState = null; CAD.dimState = null; CAD.distState = null; CAD.trimState = null;
   CAD.tool = 'select';
   document.querySelectorAll('.cad-btn, .cad-tool-btn').forEach(b => b.classList.remove('active'));
   const el = document.getElementById('tp-select'); if (el) el.classList.add('active');
@@ -4228,20 +4318,147 @@ function cadApplyScale() {
 
 // ─ Trim / Extend ──────────────────────────────────────────────────────
 
+// Trim state: step 0=pick boundary1, step 1=pick boundary2, step 2=pick segment to trim
+CAD.trimState = null;
+
 function cadTrimClick(p) {
-  const tol=8/CAD.zoom,lines=CAD.entities.filter(e=>e.type==='line');
-  let target=null;
-  for(const l of lines){if(cadDistToSeg(p.x,p.y,l.x1,l.y1,l.x2,l.y2)<tol){target=l;break;}}
-  if(!target)return;
-  for(const l of lines){
-    if(l.id===target.id)continue;
-    const ix=cadLineIntersectCore(target.x1,target.y1,target.x2,target.y2,l.x1,l.y1,l.x2,l.y2,true);
-    if(!ix)continue;
-    cadPushUndo();
-    const d1=Math.hypot(p.x-target.x1,p.y-target.y1),d2=Math.hypot(p.x-target.x2,p.y-target.y2);
-    if(d1<d2){target.x1=ix.x;target.y1=ix.y;}else{target.x2=ix.x;target.y2=ix.y;}
-    cadMarkDirty();cadRender();return;
+  const tol = 10 / CAD.zoom;
+  const allEnt = CAD.entities.filter(e => e.type === 'line' || e.type === 'circle' || e.type === 'arc' || e.type === 'rect');
+
+  function hitEntity(px, py) {
+    for (const e of allEnt) {
+      if (e.type === 'line' && cadDistToSeg(px, py, e.x1, e.y1, e.x2, e.y2) < tol) return e;
+      if (e.type === 'circle' && Math.abs(Math.hypot(px - e.cx, py - e.cy) - e.r) < tol) return e;
+      if (e.type === 'rect') {
+        const sides = [
+          [e.x, e.y, e.x+e.w, e.y], [e.x+e.w, e.y, e.x+e.w, e.y+e.h],
+          [e.x+e.w, e.y+e.h, e.x, e.y+e.h], [e.x, e.y+e.h, e.x, e.y]
+        ];
+        for (const [x1,y1,x2,y2] of sides) if (cadDistToSeg(px,py,x1,y1,x2,y2) < tol) return e;
+      }
+    }
+    return null;
   }
+
+  if (!CAD.trimState) {
+    // Step 0: pick first boundary
+    const hit = hitEntity(p.x, p.y);
+    if (!hit) { showNotif('info','Trim','Click first boundary object'); return; }
+    CAD.trimState = { boundary1: hit, boundary2: null };
+    showNotif('info','Trim','Boundary 1 selected — click second boundary object');
+    cadRender(); return;
+  }
+
+  if (!CAD.trimState.boundary2) {
+    // Step 1: pick second boundary
+    const hit = hitEntity(p.x, p.y);
+    if (!hit || hit.id === CAD.trimState.boundary1.id) { showNotif('warn','Trim','Click a different second boundary object'); return; }
+    CAD.trimState.boundary2 = hit;
+    showNotif('info','Trim','Both boundaries set — click the segment to trim');
+    cadRender(); return;
+  }
+
+  // Step 2: pick the segment to trim between the two boundaries
+  const b1 = CAD.trimState.boundary1, b2 = CAD.trimState.boundary2;
+  const lines = CAD.entities.filter(e => e.type === 'line');
+  let target = null;
+  for (const l of lines) {
+    if (l.id === b1.id || l.id === b2.id) continue;
+    if (cadDistToSeg(p.x, p.y, l.x1, l.y1, l.x2, l.y2) < tol) { target = l; break; }
+  }
+  if (!target) { showNotif('warn','Trim','Click a line segment to trim (not a boundary)'); return; }
+
+  // Find intersections of target with both boundaries
+  function getIntersections(seg, boundary) {
+    const segs = [];
+    if (boundary.type === 'line') segs.push([boundary.x1, boundary.y1, boundary.x2, boundary.y2]);
+    else if (boundary.type === 'rect') {
+      segs.push([boundary.x, boundary.y, boundary.x+boundary.w, boundary.y]);
+      segs.push([boundary.x+boundary.w, boundary.y, boundary.x+boundary.w, boundary.y+boundary.h]);
+      segs.push([boundary.x+boundary.w, boundary.y+boundary.h, boundary.x, boundary.y+boundary.h]);
+      segs.push([boundary.x, boundary.y+boundary.h, boundary.x, boundary.y]);
+    }
+    const ixs = [];
+    for (const [x1,y1,x2,y2] of segs) {
+      const ix = cadLineIntersectCore(seg.x1, seg.y1, seg.x2, seg.y2, x1, y1, x2, y2, false);
+      if (ix) {
+        // Check intersection is on the segment (parametric t 0..1)
+        const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1, len2 = dx*dx + dy*dy;
+        if (len2 < 1e-10) continue;
+        const t = ((ix.x - seg.x1)*dx + (ix.y - seg.y1)*dy) / len2;
+        if (t >= -0.001 && t <= 1.001) ixs.push({ x: ix.x, y: ix.y, t: Math.max(0, Math.min(1, t)) });
+      }
+    }
+    // Circle intersection
+    if (boundary.type === 'circle') {
+      const cx = boundary.cx, cy = boundary.cy, r = boundary.r;
+      const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
+      const fx = seg.x1 - cx, fy = seg.y1 - cy;
+      const a = dx*dx + dy*dy, b2v = 2*(fx*dx + fy*dy), c = fx*fx + fy*fy - r*r;
+      const disc = b2v*b2v - 4*a*c;
+      if (disc >= 0) {
+        for (const sign of [-1, 1]) {
+          const t2 = (-b2v + sign * Math.sqrt(disc)) / (2 * a);
+          if (t2 >= -0.001 && t2 <= 1.001) ixs.push({ x: seg.x1 + t2*dx, y: seg.y1 + t2*dy, t: Math.max(0, Math.min(1, t2)) });
+        }
+      }
+    }
+    return ixs;
+  }
+
+  const ix1List = getIntersections(target, b1);
+  const ix2List = getIntersections(target, b2);
+
+  if (!ix1List.length || !ix2List.length) {
+    showNotif('warn','Trim','Selected line does not intersect both boundaries'); return;
+  }
+
+  // Pick the closest intersections to the click point
+  const segLen = Math.hypot(target.x2 - target.x1, target.y2 - target.y1) || 1;
+  function tOfPoint(pt) { return ((pt.x - target.x1)*(target.x2 - target.x1) + (pt.y - target.y1)*(target.y2 - target.y1)) / (segLen * segLen); }
+  const tClick = tOfPoint(p);
+
+  // Get the t-values of all boundary intersections, sorted
+  const allTs = [...ix1List, ...ix2List].map(ix => ix.t).sort((a,b) => a-b);
+  if (allTs.length < 2) { showNotif('warn','Trim','Could not find two cut points'); return; }
+
+  // Find the interval [tLo, tHi] that contains tClick
+  let tLo = allTs[0], tHi = allTs[allTs.length - 1];
+  for (let i = 0; i < allTs.length - 1; i++) {
+    if (tClick >= allTs[i] && tClick <= allTs[i+1]) { tLo = allTs[i]; tHi = allTs[i+1]; break; }
+  }
+
+  cadPushUndo();
+  // Remove the portion [tLo, tHi] by splitting or shortening
+  const dx = target.x2 - target.x1, dy = target.y2 - target.y1;
+  const pLo = { x: target.x1 + tLo*dx, y: target.y1 + tLo*dy };
+  const pHi = { x: target.x1 + tHi*dx, y: target.y1 + tHi*dy };
+
+  // Decide which part to keep: the part NOT containing the click
+  // If click is inside [tLo, tHi], we delete that middle portion
+  // Keep piece before tLo if it has length, and piece after tHi if it has length
+  const keepBefore = tLo > 0.001;
+  const keepAfter  = tHi < 0.999;
+
+  if (keepBefore && keepAfter) {
+    // Split into two segments
+    const seg2 = JSON.parse(JSON.stringify(target));
+    seg2.id = cadNewId();
+    seg2.x1 = pHi.x; seg2.y1 = pHi.y;
+    target.x2 = pLo.x; target.y2 = pLo.y;
+    CAD.entities.push(seg2);
+  } else if (keepBefore) {
+    target.x2 = pLo.x; target.y2 = pLo.y;
+  } else if (keepAfter) {
+    target.x1 = pHi.x; target.y1 = pHi.y;
+  } else {
+    // Entire segment is trimmed
+    CAD.entities = CAD.entities.filter(e => e.id !== target.id);
+  }
+
+  CAD.trimState = null;
+  cadMarkDirty(); cadRender();
+  showNotif('success','Trim','Segment trimmed — select new boundaries or press Esc');
 }
 
 function cadExtendClick(p) {
@@ -4425,16 +4642,7 @@ function cadRender() {
   ctx.fillStyle=CAD.darkBg?'#0a0c0f':'#f8f8f0';
   ctx.fillRect(0,0,W,H);
 
-  // Grid
-  const gridPx=CAD.snapGrid*CAD.zoom;
-  if(gridPx>5){
-    ctx.strokeStyle=CAD.darkBg?'rgba(255,255,255,0.04)':'rgba(0,0,0,0.07)';
-    ctx.lineWidth=0.5;ctx.setLineDash([]);
-    const ox=CAD.pan.x%gridPx;const oy=(H-(CAD.pan.y%gridPx));
-    for(let x=((ox%gridPx)+gridPx)%gridPx;x<W;x+=gridPx){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-    for(let y=((oy%gridPx)+gridPx)%gridPx;y<H;y+=gridPx){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
-  }
-
+  // Grid disabled (snap to objects only)
   // Major grid 100mm
   const mg=100*CAD.zoom;
   if(mg>15){
@@ -4457,6 +4665,27 @@ function cadRender() {
   for(const e of CAD.entities){
     if(CAD.layerVis[e.layer]===false)continue;
     cadDrawEntity(ctx,e,CAD.selected.has(e.id));
+  }
+
+  // Trim boundary highlights
+  if (CAD.trimState) {
+    const drawTrimHighlight = (ent, color) => {
+      if (!ent) return;
+      ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 2.5 / CAD.zoom * CAD.zoom; ctx.setLineDash([]);
+      if (ent.type === 'line') {
+        const s1 = cadWorldToScreen(ent.x1, ent.y1), s2 = cadWorldToScreen(ent.x2, ent.y2);
+        ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
+      } else if (ent.type === 'circle') {
+        const sc = cadWorldToScreen(ent.cx, ent.cy);
+        ctx.beginPath(); ctx.arc(sc.x, sc.y, ent.r * CAD.zoom, 0, Math.PI*2); ctx.stroke();
+      } else if (ent.type === 'rect') {
+        const sc = cadWorldToScreen(ent.x, ent.y);
+        ctx.strokeRect(sc.x, sc.y - ent.h*CAD.zoom, ent.w*CAD.zoom, ent.h*CAD.zoom);
+      }
+      ctx.restore();
+    };
+    drawTrimHighlight(CAD.trimState.boundary1, '#ffaa00');
+    drawTrimHighlight(CAD.trimState.boundary2, '#ff6600');
   }
 
   // Ghost
@@ -4695,6 +4924,127 @@ function cadExportDXF() {
   a.href=url;a.download='sheetforge_edit.dxf';a.click();URL.revokeObjectURL(url);
   const db=document.getElementById('cad-dirty-badge');if(db)db.style.display='none';
   showNotif('success','DXF Exported','sheetforge_edit.dxf saved');
+}
+
+// ─ Open / Save DXF from/to computer ──────────────────────────────────
+
+function cadOpenDXFFile() {
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.accept = '.dxf,.DXF';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    try {
+      cadImportDXFText(text, file.name);
+    } catch (err) {
+      showNotif('error', 'Open Failed', err.message || 'Could not parse DXF file');
+    }
+  };
+  input.click();
+}
+
+function cadImportDXFText(dxfText, fileName) {
+  // Parse DXF entities from text
+  const lines = dxfText.split(/\r?\n/);
+  const entities = [];
+  let i = 0;
+  function nextPair() {
+    while (i < lines.length) {
+      const code = parseInt(lines[i]?.trim(), 10);
+      const val = lines[i+1]?.trim() ?? '';
+      i += 2;
+      if (!isNaN(code)) return { code, val };
+    }
+    return null;
+  }
+  // Scan for ENTITIES section
+  let inEntities = false;
+  i = 0;
+  while (i < lines.length) {
+    const pair = nextPair();
+    if (!pair) break;
+    if (pair.code === 2 && pair.val === 'ENTITIES') { inEntities = true; break; }
+  }
+  if (!inEntities) { showNotif('warn', 'Open DXF', 'No ENTITIES section found — showing empty canvas'); }
+
+  // Parse entities
+  while (i < lines.length) {
+    const pair = nextPair();
+    if (!pair) break;
+    if (pair.code === 0) {
+      const etype = pair.val.toUpperCase();
+      if (etype === 'ENDSEC' || etype === 'EOF') break;
+      const props = {};
+      let lookAhead = nextPair();
+      while (lookAhead && lookAhead.code !== 0) {
+        props[lookAhead.code] = (props[lookAhead.code] !== undefined) ? props[lookAhead.code] : lookAhead.val;
+        // Store multiple values of same code
+        const key = lookAhead.code + '_' + Object.keys(props).filter(k=>k.startsWith(lookAhead.code+'_')).length;
+        props[key] = lookAhead.val;
+        lookAhead = nextPair();
+      }
+      // Step back one entity
+      if (lookAhead && lookAhead.code === 0) i -= 2;
+
+      const f = (k) => parseFloat(props[k]) || 0;
+      const id = cadNewId();
+      if (etype === 'LINE') {
+        entities.push({ id, type:'line', x1:f(10), y1:f(20), x2:f(11), y2:f(21), color:'#ffffff', lw:1, layer:'0' });
+      } else if (etype === 'CIRCLE') {
+        entities.push({ id, type:'circle', cx:f(10), cy:f(20), r:f(40), color:'#ffffff', lw:1, layer:'0' });
+      } else if (etype === 'ARC') {
+        const sa = (f(50)) * Math.PI / 180, ea = (f(51)) * Math.PI / 180;
+        entities.push({ id, type:'arc', cx:f(10), cy:f(20), r:f(40), startAngle:sa, endAngle:ea, color:'#ffffff', lw:1, layer:'0' });
+      } else if (etype === 'LWPOLYLINE' || etype === 'POLYLINE') {
+        const pts = [];
+        // Collect all 10/20 pairs
+        const xs = Object.keys(props).filter(k => /^10(_\d+)?$/.test(k)).map(k => parseFloat(props[k]));
+        const ys = Object.keys(props).filter(k => /^20(_\d+)?$/.test(k)).map(k => parseFloat(props[k]));
+        for (let pi = 0; pi < Math.min(xs.length, ys.length); pi++) pts.push([xs[pi], ys[pi]]);
+        if (pts.length >= 2) entities.push({ id, type:'lwpolyline', points:pts, closed: (parseInt(props[70])||0)&1, color:'#ffffff', lw:1, layer:'0' });
+      } else if (etype === 'MTEXT' || etype === 'TEXT') {
+        entities.push({ id, type:'text', x:f(10), y:f(20), text: props[1]||'', size: f(40)||3, color:'#ffffff', layer:'0' });
+      }
+    }
+  }
+
+  cadPushUndo();
+  CAD.entities = entities;
+  CAD.selected.clear();
+  const fn = document.getElementById('cad-filename');
+  if (fn) fn.textContent = fileName || 'Imported DXF';
+  cadFitView();
+  cadMarkDirty();
+  cadUpdateInfo();
+  cadRender();
+  showNotif('success', 'File Opened', `${fileName} — ${entities.length} entities loaded`);
+}
+
+function cadSaveDXFFile() {
+  // Use the same DXF generation as cadExportDXF but save with current filename
+  let dxf=`0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1015\n9\n$INSUNITS\n70\n4\n`;
+  dxf+=`9\n$EXTMIN\n10\n${CAD.extents.minX}\n20\n${CAD.extents.minY}\n30\n0\n`;
+  dxf+=`9\n$EXTMAX\n10\n${CAD.extents.maxX}\n20\n${CAD.extents.maxY}\n30\n0\n`;
+  dxf+=`0\nENDSEC\n0\nSECTION\n2\nENTITIES\n`;
+  for(const e of CAD.entities){
+    if(e.type==='line')dxf+=`0\nLINE\n8\n0\n10\n${e.x1.toFixed(4)}\n20\n${e.y1.toFixed(4)}\n30\n0\n11\n${e.x2.toFixed(4)}\n21\n${e.y2.toFixed(4)}\n31\n0\n`;
+    else if(e.type==='circle')dxf+=`0\nCIRCLE\n8\n0\n10\n${e.cx.toFixed(4)}\n20\n${e.cy.toFixed(4)}\n30\n0\n40\n${e.r.toFixed(4)}\n`;
+    else if(e.type==='arc')dxf+=`0\nARC\n8\n0\n10\n${e.cx.toFixed(4)}\n20\n${e.cy.toFixed(4)}\n30\n0\n40\n${e.r.toFixed(4)}\n50\n${(e.startAngle*180/Math.PI).toFixed(4)}\n51\n${(e.endAngle*180/Math.PI).toFixed(4)}\n`;
+    else if(e.type==='rect'){const pts=[[e.x,e.y],[e.x+e.w,e.y],[e.x+e.w,e.y+e.h],[e.x,e.y+e.h]];dxf+=`0\nLWPOLYLINE\n8\n0\n90\n4\n70\n1\n`;pts.forEach(([x,y])=>{dxf+=`10\n${x.toFixed(4)}\n20\n${y.toFixed(4)}\n`;});}
+    else if(e.type==='polyline'||e.type==='lwpolyline'){const pts=e.points||[];dxf+=`0\nLWPOLYLINE\n8\n0\n90\n${pts.length}\n70\n${e.closed?1:0}\n`;pts.forEach(([x,y])=>{dxf+=`10\n${x.toFixed(4)}\n20\n${y.toFixed(4)}\n`;});}
+    else if(e.type==='text')dxf+=`0\nMTEXT\n8\n0\n10\n${e.x.toFixed(4)}\n20\n${e.y.toFixed(4)}\n30\n0\n40\n${(e.size||3).toFixed(4)}\n1\n${e.text||''}\n`;
+  }
+  dxf+=`0\nENDSEC\n0\nEOF\n`;
+  const fnEl = document.getElementById('cad-filename');
+  const fname = (fnEl && fnEl.textContent && fnEl.textContent !== 'No file loaded') ? fnEl.textContent.replace(/\.dxf$/i,'') + '.dxf' : 'drawing.dxf';
+  const blob = new Blob([dxf], { type: 'application/dxf' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = fname; a.click(); URL.revokeObjectURL(url);
+  const db = document.getElementById('cad-dirty-badge'); if(db) db.style.display='none';
+  showNotif('success', 'File Saved', fname + ' saved to your computer');
 }
 
 // ─ G-Code Generator & Simulator ───────────────────────────────────────
