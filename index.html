@@ -5001,38 +5001,73 @@ function cadGcSimDraw(highlightPts) {
 
   // Draw all toolpaths in dim color
   if (gcodeData) {
+    // Draw rapid moves (tool lifts) as dashed dim lines, cut moves as solid teal
+    let prevEnd = null;
     for (const path of gcodeData.paths) {
       const pts = path.segments;
       if (pts.length < 2) continue;
-      ctx.strokeStyle='rgba(0,212,160,0.3)';ctx.lineWidth=1;ctx.setLineDash([]);
+      // Rapid move from previous path end to this path start
+      if (prevEnd) {
+        const rs=toS(prevEnd[0],prevEnd[1]),re=toS(pts[0][0],pts[0][1]);
+        ctx.strokeStyle='rgba(255,180,0,0.2)';ctx.lineWidth=0.8;ctx.setLineDash([3,4]);
+        ctx.beginPath();ctx.moveTo(rs.x,rs.y);ctx.lineTo(re.x,re.y);ctx.stroke();
+      }
+      // Cut move along the path
+      ctx.strokeStyle='rgba(0,212,160,0.35)';ctx.lineWidth=1;ctx.setLineDash([]);
       ctx.beginPath();
       const s0=toS(pts[0][0],pts[0][1]);ctx.moveTo(s0.x,s0.y);
       for(let i=1;i<pts.length;i++){const s=toS(pts[i][0],pts[i][1]);ctx.lineTo(s.x,s.y);}
       ctx.stroke();
+      prevEnd = pts[pts.length-1];
     }
+    ctx.setLineDash([]);
   } else {
-    // Draw DXF entities
+    // Draw DXF entities — all visible types
     for (const e of CAD.entities) {
       if (CAD.layerVis[e.layer]===false) continue;
       ctx.strokeStyle='rgba(0,170,255,0.4)';ctx.lineWidth=1;ctx.setLineDash([]);
-      if (e.type==='line'){const p1=toS(e.x1,e.y1),p2=toS(e.x2,e.y2);ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();}
-      else if (e.type==='rect'){const p1=toS(e.x,e.y),p2=toS(e.x+e.w,e.y+e.h);ctx.strokeRect(Math.min(p1.x,p2.x),Math.min(p1.y,p2.y),Math.abs(p2.x-p1.x),Math.abs(p2.y-p1.y));}
-      else if (e.type==='circle'){const c=toS(e.cx,e.cy);ctx.beginPath();ctx.arc(c.x,c.y,e.r*sc,0,2*Math.PI);ctx.stroke();}
+      if (e.type==='line') {
+        const p1=toS(e.x1,e.y1),p2=toS(e.x2,e.y2);
+        ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+      } else if (e.type==='rect') {
+        const p1=toS(e.x,e.y),p2=toS(e.x+e.w,e.y+e.h);
+        ctx.beginPath();
+        ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.lineTo(p1.x,p2.y);ctx.closePath();
+        ctx.stroke();
+      } else if (e.type==='circle') {
+        const c=toS(e.cx,e.cy);
+        ctx.beginPath();ctx.arc(c.x,c.y,e.r*sc,0,2*Math.PI);ctx.stroke();
+      } else if (e.type==='arc') {
+        const c=toS(e.cx,e.cy);
+        // DXF arcs are CCW; canvas arcs go CW — flip Y means we swap start/end and negate
+        const sa=-(e.startAngle||0), ea=-(e.endAngle||Math.PI);
+        ctx.beginPath();ctx.arc(c.x,c.y,e.r*sc,sa,ea,true);ctx.stroke();
+      } else if (e.type==='polyline'||e.type==='lwpolyline') {
+        const pts=e.points||[];if(pts.length<2)continue;
+        ctx.beginPath();
+        const p0=toS(pts[0][0],pts[0][1]);ctx.moveTo(p0.x,p0.y);
+        for(let i=1;i<pts.length;i++){const p=toS(pts[i][0],pts[i][1]);ctx.lineTo(p.x,p.y);}
+        if(e.closed){ctx.closePath();}
+        ctx.stroke();
+      } else if (e.type==='hatch') {
+        const p1=toS(e.x1,e.y1),p2=toS(e.x2,e.y2);
+        ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+      } else if (e.type==='dimension') {
+        const p1=toS(e.x1,e.y1),p2=toS(e.x2,e.y2);
+        ctx.strokeStyle='rgba(255,180,0,0.35)';
+        ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+      } else if (e.type==='text') {
+        const p=toS(e.x,e.y);
+        ctx.strokeStyle='rgba(160,120,255,0.4)';
+        const s=(e.size||3)*sc*0.5;
+        ctx.beginPath();ctx.moveTo(p.x-s,p.y);ctx.lineTo(p.x+s,p.y);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(p.x,p.y-s);ctx.lineTo(p.x,p.y+s);ctx.stroke();
+      }
     }
   }
 
-  // Draw highlighted (simulated so far) in bright color
-  if (highlightPts.length >= 2) {
-    ctx.strokeStyle='#00d4a0';ctx.lineWidth=2;ctx.setLineDash([]);
-    ctx.beginPath();
-    const s0=toS(highlightPts[0][0],highlightPts[0][1]);ctx.moveTo(s0.x,s0.y);
-    for(let i=1;i<highlightPts.length;i++){const s=toS(highlightPts[i][0],highlightPts[i][1]);ctx.lineTo(s.x,s.y);}
-    ctx.stroke();
-    // Tool head marker
-    const last=highlightPts[highlightPts.length-1];
-    const ls=toS(last[0],last[1]);
-    ctx.fillStyle='#ffcc00';ctx.beginPath();ctx.arc(ls.x,ls.y,5,0,2*Math.PI);ctx.fill();
-  }
+  // Tool head / highlight overlay is now handled by the simulation loop directly
+  // (cadSimulateGCode draws its own overlay after calling cadGcSimDraw([]))
 
   // Origin marker
   const o=toS(0,0);
@@ -5046,22 +5081,87 @@ function cadSimulateGCode() {
   document.getElementById('gc-sim-btn').style.display='none';
   document.getElementById('gc-sim-stop').style.display='';
 
-  // Flatten all path segments into one sequence for animation
-  const allPts = [];
+  // Build a flat sequence of moves with type: 'cut' or 'rapid'
+  // Rapids are tool lifts between toolpaths; cuts are within a toolpath.
+  const moves = []; // { type: 'cut'|'rapid', pts: [[x,y], [x,y]] }
+  let prevEnd = null;
   for (const path of gcodeData.paths) {
-    for (const pt of path.segments) allPts.push(pt);
+    const pts = path.segments;
+    if (pts.length < 1) continue;
+    // Rapid to start of this path (if we have a previous position)
+    if (prevEnd) {
+      moves.push({ type: 'rapid', pts: [prevEnd, pts[0]] });
+    }
+    // Cut through all points in this path
+    for (let i = 1; i < pts.length; i++) {
+      moves.push({ type: 'cut', pts: [pts[i-1], pts[i]] });
+    }
+    prevEnd = pts[pts.length - 1];
   }
-  if (allPts.length < 2) return;
+  if (!moves.length) return;
 
-  let idx = 0;
-  const drawn = [];
-  const STEP = Math.max(1, Math.floor(allPts.length/200)); // speed
+  // Track which moves have been completed and current partial move progress
+  let moveIdx = 0;
+  const completedCuts = []; // array of {pts} for fully completed cut moves
+  const completedRapids = []; // array of {pts} for fully completed rapid moves
+
+  const STEP = Math.max(1, Math.floor(moves.length / 250)); // ~250 frames total
 
   gcSimTimer = setInterval(() => {
-    idx = Math.min(idx+STEP, allPts.length-1);
-    drawn.push(allPts[idx]);
-    cadGcSimDraw(drawn);
-    if (idx >= allPts.length-1) { cadStopSimulation(); }
+    // Advance by STEP moves
+    for (let s = 0; s < STEP && moveIdx < moves.length; s++, moveIdx++) {
+      const m = moves[moveIdx];
+      if (m.type === 'cut') completedCuts.push(m.pts);
+      else completedRapids.push(m.pts);
+    }
+
+    // Redraw base scene
+    cadGcSimDraw([]);
+
+    // Overlay completed rapid moves as dashed yellow
+    const cv = document.getElementById('gc-sim-canvas');
+    if (!cv) return;
+    const ctx = cv.getContext('2d');
+    const W = cv.width, H = cv.height;
+
+    // Recalculate same transform used in cadGcSimDraw
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+    const allPts2 = gcodeData.paths.flatMap(p=>p.segments);
+    for (const [x,y] of allPts2) { minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y); }
+    if (!isFinite(minX)) return;
+    const margin=24;
+    const sxr=(W-margin*2)/(maxX-minX||1), syr=(H-margin*2)/(maxY-minY||1);
+    const scr=Math.min(sxr,syr);
+    const offXr=margin+(W-margin*2-(maxX-minX)*scr)/2 - minX*scr;
+    const offYr=margin+(H-margin*2-(maxY-minY)*scr)/2 - minY*scr;
+    const toSr = (x,y) => ({ x: offXr+x*scr, y: H-offYr-y*scr });
+
+    // Draw completed rapid moves
+    ctx.strokeStyle='rgba(255,200,0,0.25)';ctx.lineWidth=0.8;ctx.setLineDash([3,4]);
+    for (const seg of completedRapids) {
+      const p1=toSr(seg[0][0],seg[0][1]),p2=toSr(seg[1][0],seg[1][1]);
+      ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Draw completed cut moves in bright teal
+    ctx.strokeStyle='#00d4a0';ctx.lineWidth=2;
+    for (const seg of completedCuts) {
+      const p1=toSr(seg[0][0],seg[0][1]),p2=toSr(seg[1][0],seg[1][1]);
+      ctx.beginPath();ctx.moveTo(p1.x,p1.y);ctx.lineTo(p2.x,p2.y);ctx.stroke();
+    }
+
+    // Tool head marker at current position
+    if (moveIdx > 0) {
+      const lastMove = moves[Math.min(moveIdx, moves.length-1)];
+      const lastPt = lastMove.pts[1];
+      const lp = toSr(lastPt[0], lastPt[1]);
+      ctx.fillStyle='#ffcc00';ctx.beginPath();ctx.arc(lp.x,lp.y,5,0,2*Math.PI);ctx.fill();
+      // Inner dot
+      ctx.fillStyle='#ff4400';ctx.beginPath();ctx.arc(lp.x,lp.y,2,0,2*Math.PI);ctx.fill();
+    }
+
+    if (moveIdx >= moves.length) { cadStopSimulation(); }
   }, 30);
 }
 
