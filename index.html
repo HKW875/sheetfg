@@ -4340,6 +4340,171 @@ function cadTrimClick(p) {
     return null;
   }
 
+  // Returns t-parameter [0..1] of intersection of line (x1,y1)-(x2,y2) with boundary entity
+  // Uses line-extended intersection so boundaries don't need to physically reach the segment
+  function getCutTs(lx1, ly1, lx2, ly2, boundary) {
+    const dx = lx2 - lx1, dy = ly2 - ly1;
+    const len2 = dx*dx + dy*dy;
+    if (len2 < 1e-10) return [];
+    const ts = [];
+
+    function addLineIntersect(bx1, by1, bx2, by2) {
+      // Parametric: P = A + t*(B-A),  Q = C + s*(D-C)
+      const bdx = bx2-bx1, bdy = by2-by1;
+      const denom = dx*bdy - dy*bdx;
+      if (Math.abs(denom) < 1e-10) return; // parallel
+      const t = ((bx1-lx1)*bdy - (by1-ly1)*bdx) / denom;
+      const s = ((bx1-lx1)*dy  - (by1-ly1)*dx)  / denom;
+      // t must be on our segment (0..1), s must be on boundary segment (0..1)
+      if (t >= -0.001 && t <= 1.001 && s >= -0.001 && s <= 1.001) ts.push(Math.max(0, Math.min(1, t)));
+    }
+
+    if (boundary.type === 'line') {
+      addLineIntersect(boundary.x1, boundary.y1, boundary.x2, boundary.y2);
+    } else if (boundary.type === 'rect') {
+      addLineIntersect(boundary.x,         boundary.y,         boundary.x+boundary.w, boundary.y);
+      addLineIntersect(boundary.x+boundary.w, boundary.y,     boundary.x+boundary.w, boundary.y+boundary.h);
+      addLineIntersect(boundary.x+boundary.w, boundary.y+boundary.h, boundary.x, boundary.y+boundary.h);
+      addLineIntersect(boundary.x,         boundary.y+boundary.h, boundary.x,         boundary.y);
+    } else if (boundary.type === 'circle') {
+      const fx = lx1 - boundary.cx, fy = ly1 - boundary.cy, r = boundary.r;
+      const a = len2, bv = 2*(fx*dx + fy*dy), c = fx*fx + fy*fy - r*r;
+      const disc = bv*bv - 4*a*c;
+      if (disc < 0) return ts;
+      for (const sgn of [-1, 1]) {
+        const t = (-bv + sgn*Math.sqrt(disc)) / (2*a);
+        if (t >= -0.001 && t <= 1.001) ts.push(Math.max(0, Math.min(1, t)));
+      }
+    } else if (boundary.type === 'arc') {
+      // Circle part first, then filter by arc angle
+      const fx = lx1 - boundary.cx, fy = ly1 - boundary.cy, r = boundary.r;
+      const a = len2, bv = 2*(fx*dx + fy*dy), c = fx*fx + fy*fy - r*r;
+      const disc = bv*bv - 4*a*c;
+      if (disc < 0) return ts;
+      for (const sgn of [-1, 1]) {
+        const t = (-bv + sgn*Math.sqrt(disc)) / (2*a);
+        if (t < -0.001 || t > 1.001) continue;
+        const ix = lx1 + t*dx, iy = ly1 + t*dy;
+        let ang = Math.atan2(iy - boundary.cy, ix - boundary.cx);
+        // Normalise angle to arc range
+        let sa = boundary.startAngle, ea = boundary.endAngle;
+        while (ea < sa) ea += Math.PI*2;
+        while (ang < sa) ang += Math.PI*2;
+        if (ang <= ea + 0.001) ts.push(Math.max(0, Math.min(1, t)));
+      }
+    }
+    return ts;
+  }
+
+  if (!CAD.trimState) {
+    const hit = hitEntity(p.x, p.y);
+    if (!hit) { showNotif('info','Trim','Click first boundary object (the cutting edge)'); return; }
+    CAD.trimState = { boundary1: hit, boundary2: null };
+    showNotif('info','Trim Step 1/3','Boundary 1 selected — now click second boundary object');
+    cadRender(); return;
+  }
+
+  if (!CAD.trimState.boundary2) {
+    const hit = hitEntity(p.x, p.y);
+    if (!hit || hit.id === CAD.trimState.boundary1.id) {
+      showNotif('warn','Trim','Click a different second boundary object'); return;
+    }
+    CAD.trimState.boundary2 = hit;
+    showNotif('info','Trim Step 2/3','Both boundaries set — now click the part of the segment to remove');
+    cadRender(); return;
+  }
+
+  // Step 3: user clicks the part of a line to remove
+  const b1 = CAD.trimState.boundary1, b2 = CAD.trimState.boundary2;
+
+  // Find the target line (can be a boundary itself — trimming its own end)
+  const lines = CAD.entities.filter(e => e.type === 'line');
+  let target = null;
+  for (const l of lines) {
+    if (cadDistToSeg(p.x, p.y, l.x1, l.y1, l.x2, l.y2) < tol) { target = l; break; }
+  }
+  if (!target) { showNotif('warn','Trim','Click on a line segment to trim'); return; }
+
+  const ts1 = getCutTs(target.x1, target.y1, target.x2, target.y2, b1);
+  const ts2 = getCutTs(target.x1, target.y1, target.x2, target.y2, b2);
+
+  // Also allow trimming with just one boundary if the target IS the other boundary
+  const useSingle = (target.id === b1.id || target.id === b2.id);
+  let allCutTs;
+  if (useSingle) {
+    const otherBoundary = target.id === b1.id ? b2 : b1;
+    allCutTs = getCutTs(target.x1, target.y1, target.x2, target.y2, otherBoundary);
+  } else {
+    if (!ts1.length && !ts2.length) {
+      showNotif('warn','Trim','Line does not intersect either boundary'); return;
+    }
+    allCutTs = [...ts1, ...ts2];
+  }
+
+  if (!allCutTs.length) { showNotif('warn','Trim','No intersection found on that segment'); return; }
+
+  // t-value of where click lands on the segment
+  const sdx = target.x2 - target.x1, sdy = target.y2 - target.y1, slen2 = sdx*sdx + sdy*sdy;
+  const tClick = slen2 > 1e-10 ? ((p.x - target.x1)*sdx + (p.y - target.y1)*sdy) / slen2 : 0;
+
+  allCutTs.sort((a,b) => a-b);
+
+  // Deduplicate close t-values
+  const dedupTs = [allCutTs[0]];
+  for (let i = 1; i < allCutTs.length; i++) {
+    if (allCutTs[i] - dedupTs[dedupTs.length-1] > 0.0001) dedupTs.push(allCutTs[i]);
+  }
+
+  // Find which interval [tLo, tHi] the click falls in
+  let tLo = 0, tHi = 1;
+  if (dedupTs.length === 1) {
+    // Only one cut — trim whichever end is clicked
+    if (tClick <= dedupTs[0]) { tLo = 0; tHi = dedupTs[0]; }
+    else                       { tLo = dedupTs[0]; tHi = 1; }
+  } else {
+    // Multiple cuts — find the interval containing the click
+    if (tClick < dedupTs[0]) { tLo = 0; tHi = dedupTs[0]; }
+    else if (tClick > dedupTs[dedupTs.length-1]) { tLo = dedupTs[dedupTs.length-1]; tHi = 1; }
+    else {
+      for (let i = 0; i < dedupTs.length - 1; i++) {
+        if (tClick >= dedupTs[i] && tClick <= dedupTs[i+1]) { tLo = dedupTs[i]; tHi = dedupTs[i+1]; break; }
+      }
+    }
+  }
+
+  const dx = target.x2 - target.x1, dy = target.y2 - target.y1;
+  const pLo = { x: target.x1 + tLo*dx, y: target.y1 + tLo*dy };
+  const pHi = { x: target.x1 + tHi*dx, y: target.y1 + tHi*dy };
+  const keepBefore = tLo > 0.002;
+  const keepAfter  = tHi < 0.998;
+
+  cadPushUndo();
+  if (keepBefore && keepAfter) {
+    // Split: keep both sides
+    const seg2 = JSON.parse(JSON.stringify(target));
+    seg2.id = cadNewId();
+    seg2.x1 = pHi.x; seg2.y1 = pHi.y; // seg2 = after cut
+    target.x2 = pLo.x; target.y2 = pLo.y; // target = before cut
+    CAD.entities.push(seg2);
+  } else if (keepBefore) {
+    target.x2 = pLo.x; target.y2 = pLo.y;
+  } else if (keepAfter) {
+    target.x1 = pHi.x; target.y1 = pHi.y;
+  } else {
+    CAD.entities = CAD.entities.filter(e => e.id !== target.id);
+  }
+
+  // Keep trim state so user can keep trimming — reset only boundary selection
+  CAD.trimState = null;
+  cadMarkDirty(); cadRender();
+  showNotif('success','Trim','Done — click new boundaries to trim again, or Esc to exit');
+}
+        for (const [x1,y1,x2,y2] of sides) if (cadDistToSeg(px,py,x1,y1,x2,y2) < tol) return e;
+      }
+    }
+    return null;
+  }
+
   if (!CAD.trimState) {
     // Step 0: pick first boundary
     const hit = hitEntity(p.x, p.y);
