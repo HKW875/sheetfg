@@ -2398,7 +2398,7 @@
           <i class="fas fa-info-circle"></i> What will be saved
         </div>
         <ul style="list-style:none;display:flex;flex-direction:column;gap:8px;font-size:13px">
-          <li class="flex-center gap-8"><i class="fas fa-check-circle text-success"></i> DWG drawing exported as high-res PNG (300dpi)</li>
+          <li class="flex-center gap-8"><i class="fas fa-check-circle text-success"></i> DXF drawing exported as high-res PNG (300dpi)</li>
           <li class="flex-center gap-8"><i class="fas fa-check-circle text-success"></i> Uploaded to Cloudinary under <code style="font-family:var(--font-mono);font-size:11px;background:var(--bg);padding:2px 6px;border-radius:4px">sheetforge/designs/</code></li>
           <li class="flex-center gap-8"><i class="fas fa-check-circle text-success"></i> Cloudinary URL + metadata saved to MongoDB</li>
           <li class="flex-center gap-8"><i class="fas fa-check-circle text-success"></i> Design linked to your account for quote requests</li>
@@ -2427,7 +2427,7 @@
         <div style="font-size:13px;font-weight:600;margin-bottom:12px">Upload Progress</div>
         <div class="cloud-status" id="save-step-1">
           <div class="spinner" id="save-spinner-1" style="width:16px;height:16px;border-width:2px"></div>
-          <div>Rendering DWG to PNG...</div>
+          <div>Rendering DXF to PNG...</div>
         </div>
         <div style="height:8px"></div>
         <div class="cloud-status" id="save-step-2" style="opacity:0.4">
@@ -2589,12 +2589,12 @@ const PROVIDERS = [
 ];
 
 const DRAWINGS = [
-  { id: 1, name: 'bracket_v3.dwg', original: 'bracket_v3.pdf', material: 'Mild Steel', thickness: '2mm', status: 'approved', date: 'Today' },
-  { id: 2, name: 'enclosure_front.dwg', original: 'enclosure_front.png', material: 'Al 5052', thickness: '3mm', status: 'approved', date: 'Yesterday' },
-  { id: 3, name: 'panel_chassis.dwg', original: 'panel_chassis.jpg', material: 'SS 304', thickness: '1.5mm', status: 'processing', date: '2 days ago' },
-  { id: 4, name: 'hinge_bracket.dwg', original: 'hinge_sketch.jpg', material: 'Mild Steel', thickness: '3mm', status: 'ready', date: 'May 18' },
-  { id: 5, name: 'cover_plate.dwg', original: 'cover.png', material: 'Al 6061', thickness: '1mm', status: 'pending', date: 'May 17' },
-  { id: 6, name: 'support_arm.dwg', original: 'arm_rough.pdf', material: 'Stainless 316', thickness: '4mm', status: 'approved', date: 'May 15' },
+  { id: 1, name: 'bracket_v3.dxf', original: 'bracket_v3.pdf', material: 'Mild Steel', thickness: '2mm', status: 'approved', date: 'Today' },
+  { id: 2, name: 'enclosure_front.dxf', original: 'enclosure_front.png', material: 'Al 5052', thickness: '3mm', status: 'approved', date: 'Yesterday' },
+  { id: 3, name: 'panel_chassis.dxf', original: 'panel_chassis.jpg', material: 'SS 304', thickness: '1.5mm', status: 'processing', date: '2 days ago' },
+  { id: 4, name: 'hinge_bracket.dxf', original: 'hinge_sketch.jpg', material: 'Mild Steel', thickness: '3mm', status: 'ready', date: 'May 18' },
+  { id: 5, name: 'cover_plate.dxf', original: 'cover.png', material: 'Al 6061', thickness: '1mm', status: 'pending', date: 'May 17' },
+  { id: 6, name: 'support_arm.dxf', original: 'arm_rough.pdf', material: 'Stainless 316', thickness: '4mm', status: 'approved', date: 'May 15' },
 ];
 
 // ================================================================
@@ -2719,7 +2719,7 @@ function renderDrawingsGrid(filter = '') {
           <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:8px">
             <div>
               <div style="font-size:13px;font-weight:600">${d.name}</div>
-              <div style="font-size:11px;color:var(--text-dim)">${d.original}</div>
+              <div style="font-size:11px;color:var(--text-dim)"><i class="fas fa-file-code" style="margin-right:4px;color:var(--accent)"></i>${d.name.replace('.dxf','.dxf')}</div>
             </div>
             <span class="badge ${statusClass}">${statusText}</span>
           </div>
@@ -2728,7 +2728,7 @@ function renderDrawingsGrid(filter = '') {
             <span class="format-tag">${d.thickness}</span>
           </div>
           <div style="display:flex;gap-8:0;gap:8px">
-            <button class="btn btn-sm flex-1" onclick="APP.currentDwg='${d.name.replace('.dwg','')}';showPage('viewer')"><i class="fas fa-eye"></i> View</button>
+            <button class="btn btn-sm flex-1" onclick="APP.currentDwg='${d.name.replace('.dxf','')}';showPage('viewer')"><i class="fas fa-eye"></i> View</button>
             ${d.status === 'approved' ? `<button class="btn btn-sm" onclick="openCloudSaveModal()"><i class="fas fa-cloud"></i></button>` : ''}
             <button class="btn btn-sm"><i class="fas fa-ellipsis-h"></i></button>
           </div>
@@ -3557,7 +3557,7 @@ async function doCloudSave() {
   const dateStr = now.toLocaleDateString('en-KE', { day:'numeric', month:'short', year:'numeric' });
   DRAWINGS.unshift({
     id: mongoId,
-    name: name + '.dwg',
+    name: name + '.dxf',
     original: name + '.png',
     material: document.getElementById('save-material')?.value || 'Mild Steel',
     thickness: document.getElementById('save-thickness')?.value || '—',
@@ -3667,14 +3667,10 @@ function cadGetSnapPoints() {
       pts.push({ x: e.x1, y: e.y1, type: 'endpoint' },
                { x: e.x2, y: e.y2, type: 'endpoint' });
     } else if (e.type === 'circle') {
-      // Center and quadrant points
-      pts.push({ x: e.cx, y: e.cy, type: 'center' },
-               { x: e.cx+e.r, y: e.cy, type: 'quadrant' },
-               { x: e.cx-e.r, y: e.cy, type: 'quadrant' },
-               { x: e.cx, y: e.cy+e.r, type: 'quadrant' },
-               { x: e.cx, y: e.cy-e.r, type: 'quadrant' });
+      // Center only — no quadrant snaps
+      pts.push({ x: e.cx, y: e.cy, type: 'center' });
     } else if (e.type === 'arc') {
-      // Center and arc endpoints
+      // Center and arc start/end endpoints only
       pts.push({ x: e.cx, y: e.cy, type: 'center' },
                { x: e.cx + e.r*Math.cos(e.startAngle), y: e.cy + e.r*Math.sin(e.startAngle), type: 'endpoint' },
                { x: e.cx + e.r*Math.cos(e.endAngle),   y: e.cy + e.r*Math.sin(e.endAngle),   type: 'endpoint' });
@@ -3806,6 +3802,20 @@ function cadAttachEvents() {
     // Right-click to confirm move
     if (CAD.tool === 'move' && CAD.moveState && CAD.moveState.dragging) {
       cadMoveEnd(); return;
+    }
+    // Right-click on trim: advance from boundary-picking to trim-segment phase
+    if (CAD.tool === 'trim' && CAD.trimState && CAD.trimState.phase === 'pick-boundaries') {
+      if (!CAD.trimState.boundaries.length) { showNotif('warn','Trim','Select at least one cutting boundary first'); return; }
+      CAD.trimState.phase = 'trim-segment';
+      showNotif('info','Trim – Step 2','Now click the segment portion to remove');
+      cadRender(); return;
+    }
+    // Right-click on extend: advance from boundary-picking to extend-line phase
+    if (CAD.tool === 'extend' && CAD.extendState && CAD.extendState.phase === 'pick-boundary') {
+      if (!CAD.extendState.boundaries.length) { showNotif('warn','Extend','Select at least one boundary line first'); return; }
+      CAD.extendState.phase = 'extend-line';
+      showNotif('info','Extend – Step 2','Now click near the end of a line to extend it to a boundary');
+      cadRender(); return;
     }
     // Default: cancel current operation
     cadCancelTool();
@@ -3943,8 +3953,8 @@ function cadSetTool(tool) {
     rotate:'Select objects · Set angle in panel · Apply',
     mirror:'Select objects · Mirror H or V in panel',
     scale:'Select objects · Enter factor · Apply',
-    trim:'Step 1: Click boundary object 1 · Step 2: Click boundary object 2 · Step 3: Click segment to trim',
-    extend:'Click segment to extend to boundary',
+    trim:'Step 1: Click cutting boundaries · Right-click when done · Step 2: Click segment portion to remove',
+    extend:'Step 1: Click boundary line(s) · Right-click when done · Step 2: Click near end of line to extend',
     stretch:'Select · drag endpoint to stretch',
     lengthen:'Click endpoint to lengthen/shorten',
     array:'Select · set rows/cols/spacing · Apply',
@@ -3964,7 +3974,7 @@ function cadSetTool(tool) {
 }
 
 function cadCancelTool() {
-  CAD.drawState = null; CAD.moveState = null; CAD.dimState = null; CAD.distState = null; CAD.trimState = null;
+  CAD.drawState = null; CAD.moveState = null; CAD.dimState = null; CAD.distState = null; CAD.trimState = null; CAD.extendState = null;
   CAD.tool = 'select';
   document.querySelectorAll('.cad-btn, .cad-tool-btn').forEach(b => b.classList.remove('active'));
   const el = document.getElementById('tp-select'); if (el) el.classList.add('active');
@@ -4176,41 +4186,51 @@ function cadCopyMouseDown(p) {
   if(!CAD.selected.size){
     const hit = cadHitTest(p.x, p.y);
     if(hit){ CAD.selected.add(hit.id); cadUpdateSelProps(); cadRender(); }
-    showNotif('info','Copy Tool','Select objects then click again to paste copy');
+    showNotif('info','Copy Tool','Select objects, then right-click to paste at cursor');
     return;
   }
+  // Copy to clipboard and inform user — paste is via right-click or Ctrl+V
   cadCopyToClipboard();
-  cadPasteFromClipboard(p);
+  showNotif('info','Copied','Right-click anywhere to paste, or press Ctrl+V');
 }
 
 function cadCopyToClipboard() {
   if(!CAD.selected.size){ showNotif('warn','Nothing selected','Select objects first (Ctrl+A for all)'); return; }
   CAD.clipboard = [];
-  // Find centroid of selection for relative paste offset
-  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  // Find top-left of selection bounding box (anchor point = minX, minY)
+  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
   for(const e of CAD.entities){
     if(!CAD.selected.has(e.id))continue;
     const bb=cadEntityBBox(e);
     if(bb){minX=Math.min(minX,bb.minX);maxX=Math.max(maxX,bb.maxX);minY=Math.min(minY,bb.minY);maxY=Math.max(maxY,bb.maxY);}
   }
-  const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
+  // anchor = top-left corner of bounding box
+  const anchorX = minX, anchorY = minY;
   for(const e of CAD.entities){
     if(!CAD.selected.has(e.id))continue;
     const clone=JSON.parse(JSON.stringify(e));
-    clone._clipOffX = clone._clipOffX || 0; // preserve
     CAD.clipboard.push(clone);
   }
-  CAD.clipboard._centroid = { x: cx, y: cy };
-  showNotif('success','Copied',`${CAD.clipboard.length} object(s) in clipboard · Ctrl+V to paste`);
+  // Store anchor (top-left) for paste offset calculation
+  CAD.clipboard._anchor = { x: anchorX, y: anchorY };
+  showNotif('success','Copied',`${CAD.clipboard.length} object(s) in clipboard · Ctrl+V or right-click to paste`);
 }
 
 function cadPasteFromClipboard(targetPt) {
   if(!CAD.clipboard || !CAD.clipboard.length){ showNotif('warn','Clipboard empty','Copy objects first with Ctrl+C'); return; }
   cadPushUndo();
-  // Paste with 20mm offset if no target point provided
-  const cent = CAD.clipboard._centroid || { x: 0, y: 0 };
-  const dest = targetPt || { x: cent.x + 20, y: cent.y - 20 };
-  const dx = dest.x - cent.x, dy = dest.y - cent.y;
+  // anchor = top-left of original bounding box
+  const anchor = CAD.clipboard._anchor || { x: 0, y: 0 };
+  // dest = where the top-left corner of pasted content lands
+  // If targetPt given (right-click), place top-left at cursor; else offset from anchor by 20mm
+  const dest = targetPt ? { x: targetPt.x, y: targetPt.y } : { x: anchor.x + 20, y: anchor.y + 20 };
+  const dx = dest.x - anchor.x, dy = dest.y - anchor.y;
+  // Safety: refuse to paste exactly on original (zero or near-zero offset)
+  if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+    // Force a visible offset so paste never overlaps the source
+    const safeOffset = 20;
+    return cadPasteFromClipboard({ x: anchor.x + safeOffset, y: anchor.y + safeOffset });
+  }
   const pasted = [];
   for(const e of CAD.clipboard){
     const clone=JSON.parse(JSON.stringify(e));
@@ -4222,8 +4242,8 @@ function cadPasteFromClipboard(targetPt) {
   // Select newly pasted objects
   CAD.selected.clear();
   pasted.forEach(id => CAD.selected.add(id));
-  // Update centroid for next paste (cascade offset)
-  CAD.clipboard._centroid = { x: dest.x, y: dest.y };
+  // Update anchor for next Ctrl+V cascade (20mm offset each time)
+  CAD.clipboard._anchor = { x: dest.x, y: dest.y };
   cadMarkDirty();cadUpdateInfo();cadUpdateSelProps();cadRender();
   showNotif('success','Pasted',`${pasted.length} object(s) pasted`);
 }
@@ -4318,65 +4338,50 @@ function cadApplyScale() {
 
 // ─ Trim / Extend ──────────────────────────────────────────────────────
 
-// Trim state: step 0=pick boundary1, step 1=pick boundary2, step 2=pick segment to trim
+// Trim: Step 1 = select one or more cutting boundaries, Step 2 = click segment to trim
+// (Professional CAD style: multi-boundary, click-to-delete portion)
 CAD.trimState = null;
 
 function cadTrimClick(p) {
   const tol = 10 / CAD.zoom;
   const allEnt = CAD.entities.filter(e => e.type === 'line' || e.type === 'circle' || e.type === 'arc' || e.type === 'rect');
 
+  // Hit-test any entity near p
   function hitEntity(px, py) {
     for (const e of allEnt) {
       if (e.type === 'line' && cadDistToSeg(px, py, e.x1, e.y1, e.x2, e.y2) < tol) return e;
       if (e.type === 'circle' && Math.abs(Math.hypot(px - e.cx, py - e.cy) - e.r) < tol) return e;
       if (e.type === 'rect') {
-        const sides = [
-          [e.x, e.y, e.x+e.w, e.y], [e.x+e.w, e.y, e.x+e.w, e.y+e.h],
-          [e.x+e.w, e.y+e.h, e.x, e.y+e.h], [e.x, e.y+e.h, e.x, e.y]
-        ];
+        const sides = [[e.x,e.y,e.x+e.w,e.y],[e.x+e.w,e.y,e.x+e.w,e.y+e.h],[e.x+e.w,e.y+e.h,e.x,e.y+e.h],[e.x,e.y+e.h,e.x,e.y]];
         for (const [x1,y1,x2,y2] of sides) if (cadDistToSeg(px,py,x1,y1,x2,y2) < tol) return e;
       }
+      if (e.type === 'arc' && Math.abs(Math.hypot(px - e.cx, py - e.cy) - e.r) < tol) return e;
     }
     return null;
   }
 
-  // Returns t-parameter [0..1] of intersection of line (x1,y1)-(x2,y2) with boundary entity
-  // Uses line-extended intersection so boundaries don't need to physically reach the segment
+  // Get all t-parameters where a line segment (lx1,ly1)-(lx2,ly2) intersects boundary entity
   function getCutTs(lx1, ly1, lx2, ly2, boundary) {
     const dx = lx2 - lx1, dy = ly2 - ly1;
     const len2 = dx*dx + dy*dy;
     if (len2 < 1e-10) return [];
     const ts = [];
-
-    function addLineIntersect(bx1, by1, bx2, by2) {
-      // Parametric: P = A + t*(B-A),  Q = C + s*(D-C)
+    function addSegIntersect(bx1, by1, bx2, by2) {
       const bdx = bx2-bx1, bdy = by2-by1;
       const denom = dx*bdy - dy*bdx;
-      if (Math.abs(denom) < 1e-10) return; // parallel
+      if (Math.abs(denom) < 1e-10) return;
       const t = ((bx1-lx1)*bdy - (by1-ly1)*bdx) / denom;
       const s = ((bx1-lx1)*dy  - (by1-ly1)*dx)  / denom;
-      // t must be on our segment (0..1), s must be on boundary segment (0..1)
       if (t >= -0.001 && t <= 1.001 && s >= -0.001 && s <= 1.001) ts.push(Math.max(0, Math.min(1, t)));
     }
-
     if (boundary.type === 'line') {
-      addLineIntersect(boundary.x1, boundary.y1, boundary.x2, boundary.y2);
+      addSegIntersect(boundary.x1, boundary.y1, boundary.x2, boundary.y2);
     } else if (boundary.type === 'rect') {
-      addLineIntersect(boundary.x,         boundary.y,         boundary.x+boundary.w, boundary.y);
-      addLineIntersect(boundary.x+boundary.w, boundary.y,     boundary.x+boundary.w, boundary.y+boundary.h);
-      addLineIntersect(boundary.x+boundary.w, boundary.y+boundary.h, boundary.x, boundary.y+boundary.h);
-      addLineIntersect(boundary.x,         boundary.y+boundary.h, boundary.x,         boundary.y);
-    } else if (boundary.type === 'circle') {
-      const fx = lx1 - boundary.cx, fy = ly1 - boundary.cy, r = boundary.r;
-      const a = len2, bv = 2*(fx*dx + fy*dy), c = fx*fx + fy*fy - r*r;
-      const disc = bv*bv - 4*a*c;
-      if (disc < 0) return ts;
-      for (const sgn of [-1, 1]) {
-        const t = (-bv + sgn*Math.sqrt(disc)) / (2*a);
-        if (t >= -0.001 && t <= 1.001) ts.push(Math.max(0, Math.min(1, t)));
-      }
-    } else if (boundary.type === 'arc') {
-      // Circle part first, then filter by arc angle
+      addSegIntersect(boundary.x, boundary.y, boundary.x+boundary.w, boundary.y);
+      addSegIntersect(boundary.x+boundary.w, boundary.y, boundary.x+boundary.w, boundary.y+boundary.h);
+      addSegIntersect(boundary.x+boundary.w, boundary.y+boundary.h, boundary.x, boundary.y+boundary.h);
+      addSegIntersect(boundary.x, boundary.y+boundary.h, boundary.x, boundary.y);
+    } else if (boundary.type === 'circle' || boundary.type === 'arc') {
       const fx = lx1 - boundary.cx, fy = ly1 - boundary.cy, r = boundary.r;
       const a = len2, bv = 2*(fx*dx + fy*dy), c = fx*fx + fy*fy - r*r;
       const disc = bv*bv - 4*a*c;
@@ -4384,261 +4389,213 @@ function cadTrimClick(p) {
       for (const sgn of [-1, 1]) {
         const t = (-bv + sgn*Math.sqrt(disc)) / (2*a);
         if (t < -0.001 || t > 1.001) continue;
-        const ix = lx1 + t*dx, iy = ly1 + t*dy;
-        let ang = Math.atan2(iy - boundary.cy, ix - boundary.cx);
-        // Normalise angle to arc range
-        let sa = boundary.startAngle, ea = boundary.endAngle;
-        while (ea < sa) ea += Math.PI*2;
-        while (ang < sa) ang += Math.PI*2;
-        if (ang <= ea + 0.001) ts.push(Math.max(0, Math.min(1, t)));
+        if (boundary.type === 'arc') {
+          const ix = lx1 + t*dx, iy = ly1 + t*dy;
+          let ang = Math.atan2(iy - boundary.cy, ix - boundary.cx);
+          let sa = boundary.startAngle, ea = boundary.endAngle;
+          while (ea < sa) ea += Math.PI*2;
+          while (ang < sa) ang += Math.PI*2;
+          if (ang > ea + 0.001) continue;
+        }
+        ts.push(Math.max(0, Math.min(1, t)));
       }
     }
     return ts;
   }
 
+  // Phase 1: accumulate boundary selections (right-click or Enter to proceed)
   if (!CAD.trimState) {
+    CAD.trimState = { boundaries: [], phase: 'pick-boundaries' };
+    showNotif('info','Trim – Step 1','Click cutting boundaries, then right-click or press Enter to trim');
+  }
+
+  if (CAD.trimState.phase === 'pick-boundaries') {
     const hit = hitEntity(p.x, p.y);
-    if (!hit) { showNotif('info','Trim','Click first boundary object (the cutting edge)'); return; }
-    CAD.trimState = { boundary1: hit, boundary2: null };
-    showNotif('info','Trim Step 1/3','Boundary 1 selected — now click second boundary object');
-    cadRender(); return;
-  }
-
-  if (!CAD.trimState.boundary2) {
-    const hit = hitEntity(p.x, p.y);
-    if (!hit || hit.id === CAD.trimState.boundary1.id) {
-      showNotif('warn','Trim','Click a different second boundary object'); return;
+    if (hit) {
+      const already = CAD.trimState.boundaries.find(b => b.id === hit.id);
+      if (!already) {
+        CAD.trimState.boundaries.push(hit);
+        showNotif('info','Trim','Boundary added (' + CAD.trimState.boundaries.length + ') — add more or right-click to start trimming');
+      } else {
+        CAD.trimState.boundaries = CAD.trimState.boundaries.filter(b => b.id !== hit.id);
+        showNotif('info','Trim','Boundary removed (' + CAD.trimState.boundaries.length + ' remaining)');
+      }
+      cadRender();
     }
-    CAD.trimState.boundary2 = hit;
-    showNotif('info','Trim Step 2/3','Both boundaries set — now click the part of the segment to remove');
-    cadRender(); return;
+    return;
   }
 
-  // Step 3: user clicks the part of a line to remove
-  const b1 = CAD.trimState.boundary1, b2 = CAD.trimState.boundary2;
+  // Phase 2: click segment to trim
+  if (CAD.trimState.phase === 'trim-segment') {
+    const boundaries = CAD.trimState.boundaries;
+    if (!boundaries.length) { showNotif('warn','Trim','No boundaries selected — Esc and restart'); return; }
 
-  // Find the target line (can be a boundary itself — trimming its own end)
-  const lines = CAD.entities.filter(e => e.type === 'line');
-  let target = null;
-  for (const l of lines) {
-    if (cadDistToSeg(p.x, p.y, l.x1, l.y1, l.x2, l.y2) < tol) { target = l; break; }
-  }
-  if (!target) { showNotif('warn','Trim','Click on a line segment to trim'); return; }
-
-  const ts1 = getCutTs(target.x1, target.y1, target.x2, target.y2, b1);
-  const ts2 = getCutTs(target.x1, target.y1, target.x2, target.y2, b2);
-
-  // Also allow trimming with just one boundary if the target IS the other boundary
-  const useSingle = (target.id === b1.id || target.id === b2.id);
-  let allCutTs;
-  if (useSingle) {
-    const otherBoundary = target.id === b1.id ? b2 : b1;
-    allCutTs = getCutTs(target.x1, target.y1, target.x2, target.y2, otherBoundary);
-  } else {
-    if (!ts1.length && !ts2.length) {
-      showNotif('warn','Trim','Line does not intersect either boundary'); return;
+    // Find clicked line
+    const lines = CAD.entities.filter(e => e.type === 'line');
+    let target = null;
+    for (const l of lines) {
+      if (cadDistToSeg(p.x, p.y, l.x1, l.y1, l.x2, l.y2) < tol) { target = l; break; }
     }
-    allCutTs = [...ts1, ...ts2];
-  }
+    if (!target) { showNotif('warn','Trim','Click a line segment to trim'); return; }
 
-  if (!allCutTs.length) { showNotif('warn','Trim','No intersection found on that segment'); return; }
+    // Collect all cut t-values from all boundaries
+    let allCutTs = [];
+    for (const b of boundaries) {
+      allCutTs.push(...getCutTs(target.x1, target.y1, target.x2, target.y2, b));
+    }
+    // If target is also a boundary, use other boundaries only
+    if (!allCutTs.length) {
+      const others = boundaries.filter(b => b.id !== target.id);
+      for (const b of others) allCutTs.push(...getCutTs(target.x1, target.y1, target.x2, target.y2, b));
+    }
+    if (!allCutTs.length) { showNotif('warn','Trim','Line does not intersect any selected boundary'); return; }
 
-  // t-value of where click lands on the segment
-  const sdx = target.x2 - target.x1, sdy = target.y2 - target.y1, slen2 = sdx*sdx + sdy*sdy;
-  const tClick = slen2 > 1e-10 ? ((p.x - target.x1)*sdx + (p.y - target.y1)*sdy) / slen2 : 0;
+    // Sort & deduplicate
+    allCutTs.sort((a,b) => a-b);
+    const dedupTs = [allCutTs[0]];
+    for (let i = 1; i < allCutTs.length; i++) {
+      if (allCutTs[i] - dedupTs[dedupTs.length-1] > 0.0001) dedupTs.push(allCutTs[i]);
+    }
 
-  allCutTs.sort((a,b) => a-b);
+    // t-value of click on segment
+    const sdx = target.x2 - target.x1, sdy = target.y2 - target.y1, slen2 = sdx*sdx + sdy*sdy;
+    const tClick = slen2 > 1e-10 ? ((p.x - target.x1)*sdx + (p.y - target.y1)*sdy) / slen2 : 0;
 
-  // Deduplicate close t-values
-  const dedupTs = [allCutTs[0]];
-  for (let i = 1; i < allCutTs.length; i++) {
-    if (allCutTs[i] - dedupTs[dedupTs.length-1] > 0.0001) dedupTs.push(allCutTs[i]);
-  }
-
-  // Find which interval [tLo, tHi] the click falls in
-  let tLo = 0, tHi = 1;
-  if (dedupTs.length === 1) {
-    // Only one cut — trim whichever end is clicked
-    if (tClick <= dedupTs[0]) { tLo = 0; tHi = dedupTs[0]; }
-    else                       { tLo = dedupTs[0]; tHi = 1; }
-  } else {
-    // Multiple cuts — find the interval containing the click
-    if (tClick < dedupTs[0]) { tLo = 0; tHi = dedupTs[0]; }
-    else if (tClick > dedupTs[dedupTs.length-1]) { tLo = dedupTs[dedupTs.length-1]; tHi = 1; }
-    else {
-      for (let i = 0; i < dedupTs.length - 1; i++) {
-        if (tClick >= dedupTs[i] && tClick <= dedupTs[i+1]) { tLo = dedupTs[i]; tHi = dedupTs[i+1]; break; }
+    // Find the interval [tLo, tHi] containing the click
+    let tLo = 0, tHi = 1;
+    if (dedupTs.length === 1) {
+      if (tClick <= dedupTs[0]) { tLo = 0; tHi = dedupTs[0]; }
+      else { tLo = dedupTs[0]; tHi = 1; }
+    } else {
+      if (tClick < dedupTs[0]) { tLo = 0; tHi = dedupTs[0]; }
+      else if (tClick > dedupTs[dedupTs.length-1]) { tLo = dedupTs[dedupTs.length-1]; tHi = 1; }
+      else {
+        for (let i = 0; i < dedupTs.length - 1; i++) {
+          if (tClick >= dedupTs[i] && tClick <= dedupTs[i+1]) { tLo = dedupTs[i]; tHi = dedupTs[i+1]; break; }
+        }
       }
     }
+
+    const edx = target.x2 - target.x1, edy = target.y2 - target.y1;
+    const pLo = { x: target.x1 + tLo*edx, y: target.y1 + tLo*edy };
+    const pHi = { x: target.x1 + tHi*edx, y: target.y1 + tHi*edy };
+    const keepBefore = tLo > 0.002;
+    const keepAfter  = tHi < 0.998;
+
+    cadPushUndo();
+    if (keepBefore && keepAfter) {
+      const seg2 = JSON.parse(JSON.stringify(target));
+      seg2.id = cadNewId(); seg2.x1 = pHi.x; seg2.y1 = pHi.y;
+      target.x2 = pLo.x; target.y2 = pLo.y;
+      CAD.entities.push(seg2);
+    } else if (keepBefore) {
+      target.x2 = pLo.x; target.y2 = pLo.y;
+    } else if (keepAfter) {
+      target.x1 = pHi.x; target.y1 = pHi.y;
+    } else {
+      CAD.entities = CAD.entities.filter(e => e.id !== target.id);
+    }
+    cadMarkDirty(); cadRender();
+    showNotif('success','Trim','Trimmed — keep clicking to trim more, or Esc to exit');
+    // Stay in trim-segment phase so user can keep trimming
   }
-
-  const dx = target.x2 - target.x1, dy = target.y2 - target.y1;
-  const pLo = { x: target.x1 + tLo*dx, y: target.y1 + tLo*dy };
-  const pHi = { x: target.x1 + tHi*dx, y: target.y1 + tHi*dy };
-  const keepBefore = tLo > 0.002;
-  const keepAfter  = tHi < 0.998;
-
-  cadPushUndo();
-  if (keepBefore && keepAfter) {
-    // Split: keep both sides
-    const seg2 = JSON.parse(JSON.stringify(target));
-    seg2.id = cadNewId();
-    seg2.x1 = pHi.x; seg2.y1 = pHi.y; // seg2 = after cut
-    target.x2 = pLo.x; target.y2 = pLo.y; // target = before cut
-    CAD.entities.push(seg2);
-  } else if (keepBefore) {
-    target.x2 = pLo.x; target.y2 = pLo.y;
-  } else if (keepAfter) {
-    target.x1 = pHi.x; target.y1 = pHi.y;
-  } else {
-    CAD.entities = CAD.entities.filter(e => e.id !== target.id);
-  }
-
-  // Keep trim state so user can keep trimming — reset only boundary selection
-  CAD.trimState = null;
-  cadMarkDirty(); cadRender();
-  showNotif('success','Trim','Done — click new boundaries to trim again, or Esc to exit');
 }
-        for (const [x1,y1,x2,y2] of sides) if (cadDistToSeg(px,py,x1,y1,x2,y2) < tol) return e;
-      }
+
+// Extend state: step 1 = pick boundary line, step 2 = click line to extend
+CAD.extendState = null;
+
+function cadExtendClick(p) {
+  const tol = 10 / CAD.zoom;
+  const lines = CAD.entities.filter(e => e.type === 'line');
+
+  function hitLine(px, py) {
+    for (const l of lines) {
+      if (cadDistToSeg(px, py, l.x1, l.y1, l.x2, l.y2) < tol) return l;
     }
     return null;
   }
 
-  if (!CAD.trimState) {
-    // Step 0: pick first boundary
-    const hit = hitEntity(p.x, p.y);
-    if (!hit) { showNotif('info','Trim','Click first boundary object'); return; }
-    CAD.trimState = { boundary1: hit, boundary2: null };
-    showNotif('info','Trim','Boundary 1 selected — click second boundary object');
-    cadRender(); return;
+  // Phase 1: pick boundary (or accumulate boundaries, right-click to advance)
+  if (!CAD.extendState) {
+    CAD.extendState = { boundaries: [], phase: 'pick-boundary' };
+    showNotif('info','Extend – Step 1','Click boundary line(s), then right-click to start extending');
   }
 
-  if (!CAD.trimState.boundary2) {
-    // Step 1: pick second boundary
-    const hit = hitEntity(p.x, p.y);
-    if (!hit || hit.id === CAD.trimState.boundary1.id) { showNotif('warn','Trim','Click a different second boundary object'); return; }
-    CAD.trimState.boundary2 = hit;
-    showNotif('info','Trim','Both boundaries set — click the segment to trim');
-    cadRender(); return;
-  }
-
-  // Step 2: pick the segment to trim between the two boundaries
-  const b1 = CAD.trimState.boundary1, b2 = CAD.trimState.boundary2;
-  const lines = CAD.entities.filter(e => e.type === 'line');
-  let target = null;
-  for (const l of lines) {
-    if (l.id === b1.id || l.id === b2.id) continue;
-    if (cadDistToSeg(p.x, p.y, l.x1, l.y1, l.x2, l.y2) < tol) { target = l; break; }
-  }
-  if (!target) { showNotif('warn','Trim','Click a line segment to trim (not a boundary)'); return; }
-
-  // Find intersections of target with both boundaries
-  function getIntersections(seg, boundary) {
-    const segs = [];
-    if (boundary.type === 'line') segs.push([boundary.x1, boundary.y1, boundary.x2, boundary.y2]);
-    else if (boundary.type === 'rect') {
-      segs.push([boundary.x, boundary.y, boundary.x+boundary.w, boundary.y]);
-      segs.push([boundary.x+boundary.w, boundary.y, boundary.x+boundary.w, boundary.y+boundary.h]);
-      segs.push([boundary.x+boundary.w, boundary.y+boundary.h, boundary.x, boundary.y+boundary.h]);
-      segs.push([boundary.x, boundary.y+boundary.h, boundary.x, boundary.y]);
+  if (CAD.extendState.phase === 'pick-boundary') {
+    const hit = hitLine(p.x, p.y);
+    if (hit) {
+      const already = CAD.extendState.boundaries.find(b => b.id === hit.id);
+      if (!already) {
+        CAD.extendState.boundaries.push(hit);
+        showNotif('info','Extend','Boundary added (' + CAD.extendState.boundaries.length + ') — right-click to extend');
+      } else {
+        CAD.extendState.boundaries = CAD.extendState.boundaries.filter(b => b.id !== hit.id);
+        showNotif('info','Extend','Boundary removed (' + CAD.extendState.boundaries.length + ' remaining)');
+      }
+      cadRender();
     }
-    const ixs = [];
-    for (const [x1,y1,x2,y2] of segs) {
-      const ix = cadLineIntersectCore(seg.x1, seg.y1, seg.x2, seg.y2, x1, y1, x2, y2, false);
-      if (ix) {
-        // Check intersection is on the segment (parametric t 0..1)
-        const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1, len2 = dx*dx + dy*dy;
-        if (len2 < 1e-10) continue;
-        const t = ((ix.x - seg.x1)*dx + (ix.y - seg.y1)*dy) / len2;
-        if (t >= -0.001 && t <= 1.001) ixs.push({ x: ix.x, y: ix.y, t: Math.max(0, Math.min(1, t)) });
+    return;
+  }
+
+  // Phase 2: click line to extend toward nearest boundary
+  if (CAD.extendState.phase === 'extend-line') {
+    const target = hitLine(p.x, p.y);
+    if (!target) { showNotif('warn','Extend','Click on a line to extend'); return; }
+
+    // Determine which end is closer to the click point
+    const d1 = Math.hypot(p.x - target.x1, p.y - target.y1);
+    const d2 = Math.hypot(p.x - target.x2, p.y - target.y2);
+    const extendEnd = d1 < d2 ? 1 : 2; // 1 = extend start end, 2 = extend finish end
+
+    // Find the nearest intersection with any boundary (on the extension beyond the clicked end)
+    let bestDist = Infinity, bestPt = null;
+    for (const b of CAD.extendState.boundaries) {
+      if (b.id === target.id) continue;
+      // Use unbounded intersection
+      const ix = cadLineIntersectCore(target.x1, target.y1, target.x2, target.y2, b.x1, b.y1, b.x2, b.y2, false);
+      if (!ix) continue;
+      // t parameter on target line — must be outside [0,1] on the clicked end side
+      const dx = target.x2 - target.x1, dy = target.y2 - target.y1, len2 = dx*dx + dy*dy;
+      if (len2 < 1e-10) continue;
+      const t = ((ix.x - target.x1)*dx + (ix.y - target.y1)*dy) / len2;
+      // For end 1 (start), extend means t < 0; for end 2 (finish), t > 1
+      if (extendEnd === 1 && t < -0.001) {
+        const dist = Math.hypot(ix.x - target.x1, ix.y - target.y1);
+        if (dist < bestDist) { bestDist = dist; bestPt = { x: ix.x, y: ix.y, end: 1 }; }
+      } else if (extendEnd === 2 && t > 1.001) {
+        const dist = Math.hypot(ix.x - target.x2, ix.y - target.y2);
+        if (dist < bestDist) { bestDist = dist; bestPt = { x: ix.x, y: ix.y, end: 2 }; }
       }
     }
-    // Circle intersection
-    if (boundary.type === 'circle') {
-      const cx = boundary.cx, cy = boundary.cy, r = boundary.r;
-      const dx = seg.x2 - seg.x1, dy = seg.y2 - seg.y1;
-      const fx = seg.x1 - cx, fy = seg.y1 - cy;
-      const a = dx*dx + dy*dy, b2v = 2*(fx*dx + fy*dy), c = fx*fx + fy*fy - r*r;
-      const disc = b2v*b2v - 4*a*c;
-      if (disc >= 0) {
-        for (const sign of [-1, 1]) {
-          const t2 = (-b2v + sign * Math.sqrt(disc)) / (2 * a);
-          if (t2 >= -0.001 && t2 <= 1.001) ixs.push({ x: seg.x1 + t2*dx, y: seg.y1 + t2*dy, t: Math.max(0, Math.min(1, t2)) });
+
+    // If no result from the clicked-end direction, try the other end
+    if (!bestPt) {
+      const otherEnd = extendEnd === 1 ? 2 : 1;
+      for (const b of CAD.extendState.boundaries) {
+        if (b.id === target.id) continue;
+        const ix = cadLineIntersectCore(target.x1, target.y1, target.x2, target.y2, b.x1, b.y1, b.x2, b.y2, false);
+        if (!ix) continue;
+        const dx = target.x2 - target.x1, dy = target.y2 - target.y1, len2 = dx*dx + dy*dy;
+        if (len2 < 1e-10) continue;
+        const t = ((ix.x - target.x1)*dx + (ix.y - target.y1)*dy) / len2;
+        if (otherEnd === 1 && t < -0.001) {
+          const dist = Math.hypot(ix.x - target.x1, ix.y - target.y1);
+          if (dist < bestDist) { bestDist = dist; bestPt = { x: ix.x, y: ix.y, end: 1 }; }
+        } else if (otherEnd === 2 && t > 1.001) {
+          const dist = Math.hypot(ix.x - target.x2, ix.y - target.y2);
+          if (dist < bestDist) { bestDist = dist; bestPt = { x: ix.x, y: ix.y, end: 2 }; }
         }
       }
     }
-    return ixs;
-  }
 
-  const ix1List = getIntersections(target, b1);
-  const ix2List = getIntersections(target, b2);
+    if (!bestPt) { showNotif('warn','Extend','No boundary intersection found in that direction'); return; }
 
-  if (!ix1List.length || !ix2List.length) {
-    showNotif('warn','Trim','Selected line does not intersect both boundaries'); return;
-  }
-
-  // Pick the closest intersections to the click point
-  const segLen = Math.hypot(target.x2 - target.x1, target.y2 - target.y1) || 1;
-  function tOfPoint(pt) { return ((pt.x - target.x1)*(target.x2 - target.x1) + (pt.y - target.y1)*(target.y2 - target.y1)) / (segLen * segLen); }
-  const tClick = tOfPoint(p);
-
-  // Get the t-values of all boundary intersections, sorted
-  const allTs = [...ix1List, ...ix2List].map(ix => ix.t).sort((a,b) => a-b);
-  if (allTs.length < 2) { showNotif('warn','Trim','Could not find two cut points'); return; }
-
-  // Find the interval [tLo, tHi] that contains tClick
-  let tLo = allTs[0], tHi = allTs[allTs.length - 1];
-  for (let i = 0; i < allTs.length - 1; i++) {
-    if (tClick >= allTs[i] && tClick <= allTs[i+1]) { tLo = allTs[i]; tHi = allTs[i+1]; break; }
-  }
-
-  cadPushUndo();
-  // Remove the portion [tLo, tHi] by splitting or shortening
-  const dx = target.x2 - target.x1, dy = target.y2 - target.y1;
-  const pLo = { x: target.x1 + tLo*dx, y: target.y1 + tLo*dy };
-  const pHi = { x: target.x1 + tHi*dx, y: target.y1 + tHi*dy };
-
-  // Decide which part to keep: the part NOT containing the click
-  // If click is inside [tLo, tHi], we delete that middle portion
-  // Keep piece before tLo if it has length, and piece after tHi if it has length
-  const keepBefore = tLo > 0.001;
-  const keepAfter  = tHi < 0.999;
-
-  if (keepBefore && keepAfter) {
-    // Split into two segments
-    const seg2 = JSON.parse(JSON.stringify(target));
-    seg2.id = cadNewId();
-    seg2.x1 = pHi.x; seg2.y1 = pHi.y;
-    target.x2 = pLo.x; target.y2 = pLo.y;
-    CAD.entities.push(seg2);
-  } else if (keepBefore) {
-    target.x2 = pLo.x; target.y2 = pLo.y;
-  } else if (keepAfter) {
-    target.x1 = pHi.x; target.y1 = pHi.y;
-  } else {
-    // Entire segment is trimmed
-    CAD.entities = CAD.entities.filter(e => e.id !== target.id);
-  }
-
-  CAD.trimState = null;
-  cadMarkDirty(); cadRender();
-  showNotif('success','Trim','Segment trimmed — select new boundaries or press Esc');
-}
-
-function cadExtendClick(p) {
-  const tol=8/CAD.zoom,lines=CAD.entities.filter(e=>e.type==='line');
-  let target=null;
-  for(const l of lines){if(cadDistToSeg(p.x,p.y,l.x1,l.y1,l.x2,l.y2)<tol){target=l;break;}}
-  if(!target)return;
-  for(const l of lines){
-    if(l.id===target.id)continue;
-    const ix=cadLineIntersectCore(target.x1,target.y1,target.x2,target.y2,l.x1,l.y1,l.x2,l.y2,false);
-    if(!ix)continue;
     cadPushUndo();
-    const d1=Math.hypot(ix.x-target.x1,ix.y-target.y1),d2=Math.hypot(ix.x-target.x2,ix.y-target.y2);
-    if(d1>d2){target.x2=ix.x;target.y2=ix.y;}else{target.x1=ix.x;target.y1=ix.y;}
-    cadMarkDirty();cadRender();return;
+    if (bestPt.end === 1) { target.x1 = bestPt.x; target.y1 = bestPt.y; }
+    else                  { target.x2 = bestPt.x; target.y2 = bestPt.y; }
+    cadMarkDirty(); cadRender();
+    showNotif('success','Extend','Line extended — click more lines or Esc to exit');
+    // Stay in extend-line phase
   }
 }
 
@@ -4833,10 +4790,10 @@ function cadRender() {
   }
 
   // Trim boundary highlights
-  if (CAD.trimState) {
+  if (CAD.trimState && CAD.trimState.boundaries) {
     const drawTrimHighlight = (ent, color) => {
       if (!ent) return;
-      ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 2.5 / CAD.zoom * CAD.zoom; ctx.setLineDash([]);
+      ctx.save(); ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.setLineDash([]);
       if (ent.type === 'line') {
         const s1 = cadWorldToScreen(ent.x1, ent.y1), s2 = cadWorldToScreen(ent.x2, ent.y2);
         ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
@@ -4846,11 +4803,24 @@ function cadRender() {
       } else if (ent.type === 'rect') {
         const sc = cadWorldToScreen(ent.x, ent.y);
         ctx.strokeRect(sc.x, sc.y - ent.h*CAD.zoom, ent.w*CAD.zoom, ent.h*CAD.zoom);
+      } else if (ent.type === 'arc') {
+        const sc = cadWorldToScreen(ent.cx, ent.cy);
+        ctx.beginPath(); ctx.arc(sc.x, sc.y, ent.r * CAD.zoom, -ent.endAngle, -ent.startAngle); ctx.stroke();
       }
       ctx.restore();
     };
-    drawTrimHighlight(CAD.trimState.boundary1, '#ffaa00');
-    drawTrimHighlight(CAD.trimState.boundary2, '#ff6600');
+    const colors = ['#ffaa00','#ff6600','#ff4488','#44ffcc'];
+    CAD.trimState.boundaries.forEach((b, i) => drawTrimHighlight(b, colors[i % colors.length]));
+  }
+
+  // Extend boundary highlights
+  if (CAD.extendState && CAD.extendState.boundaries && CAD.extendState.boundaries.length) {
+    ctx.save(); ctx.strokeStyle = '#44aaff'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 3]);
+    for (const b of CAD.extendState.boundaries) {
+      const s1 = cadWorldToScreen(b.x1, b.y1), s2 = cadWorldToScreen(b.x2, b.y2);
+      ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // Ghost
@@ -6194,7 +6164,7 @@ async function loadDesignsFromAPI() {
     if (data?.designs?.length) {
       // Merge with local demo data
       const apiDrawings = data.designs.map(d => ({
-        id: d._id, name: d.partName + '.dwg', original: d.originalFile?.filename || 'unknown',
+        id: d._id, name: d.partName + '.dxf', original: d.originalFile?.filename || 'unknown',
         material: d.material || 'Unknown', thickness: (d.thickness || '?') + 'mm',
         status: d.status === 'ready' ? 'ready' : d.status === 'approved' ? 'approved' : d.status === 'saved' ? 'approved' : 'pending',
         date: new Date(d.createdAt).toLocaleDateString(),
